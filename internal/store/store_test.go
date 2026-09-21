@@ -399,6 +399,10 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	*e2.HTTPStatus = 200
 	e2.PromptTokens = new(int)
 	*e2.PromptTokens = 10
+	e2.CompletionTokens = new(int)
+	*e2.CompletionTokens = 5
+	e2.PromptCacheHitTokens = new(int)
+	*e2.PromptCacheHitTokens = 8
 	e2.CreatedAt = time.Now().UTC()
 	if _, err := s.InsertLog(ctx, e2); err != nil {
 		t.Fatalf("InsertLog 2: %v", err)
@@ -411,6 +415,9 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	}
 	if rows[0].ID < rows[1].ID {
 		t.Error("logs should be id DESC")
+	}
+	if rows[0].PromptCacheHitTokens == nil || *rows[0].PromptCacheHitTokens != 8 {
+		t.Errorf("cache hit roundtrip: %+v", rows[0].PromptCacheHitTokens)
 	}
 
 	// 状态筛选

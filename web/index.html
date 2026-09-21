@@ -142,7 +142,7 @@
           <tr v-for="t in tokens" :key="t.id">
             <td>{{ t.id }}</td>
             <td>{{ t.name }}</td>
-            <td class="mono"><a class="td-link" :title="'点击复制'" @click="copyText(t.token)">{{ t.token }}</a></td>
+            <td class="mono"><a class="td-link" title="点击复制完整 Token" @click="revealToken(t)">{{ t.token }}</a></td>
             <td><span class="tag" :class="t.enabled ? 'green' : 'gray'">{{ t.enabled ? '启用' : '禁用' }}</span></td>
             <td>{{ fmtTime(t.created_at) }}</td>
             <td class="ops">
@@ -191,7 +191,7 @@
             <td><span class="tag" :class="l.status==='success' ? 'green' : 'red'">{{ l.status }}</span></td>
             <td>{{ l.http_status ?? '-' }}</td>
             <td>{{ l.latency_ms }}ms</td>
-            <td>{{ l.prompt_tokens != null ? (l.prompt_tokens + '+' + l.completion_tokens) : '-' }}</td>
+            <td>{{ l.prompt_tokens != null ? fmtTokens(l) : '-' }}</td>
             <td class="ops"><a @click="openLogDetail(l)">详情</a></td>
           </tr>
           <tr v-if="!logs.data.length"><td colspan="9" class="empty">暂无日志</td></tr>
@@ -409,10 +409,11 @@
           <p class="dim">
             HTTP {{ selAttempt.http_status ?? '-' }} · {{ selAttempt.latency_ms }}ms ·
             {{ selAttempt.stream ? '流式' : '非流式' }} · {{ fmtTime(selAttempt.created_at) }}
+            <template v-if="selAttempt.prompt_tokens != null"> · tokens {{ fmtTokens(selAttempt) }}</template>
           </p>
           <p class="err" v-if="selAttempt.error">{{ selAttempt.error }}</p>
-          <h4>请求体</h4><pre>{{ pretty(selAttempt.request_body) }}</pre>
-          <h4>响应体</h4><pre>{{ pretty(selAttempt.response_body) }}</pre>
+          <h4>请求体 <a class="td-link" @click="copyText(pretty(selAttempt.request_body))">复制</a></h4><pre>{{ pretty(selAttempt.request_body) }}</pre>
+          <h4>响应体 <a class="td-link" @click="copyText(pretty(selAttempt.response_body))">复制</a></h4><pre>{{ pretty(selAttempt.response_body) }}</pre>
         </template>
         <div class="actions"><button @click="logDetail=null">关闭</button></div>
       </div>

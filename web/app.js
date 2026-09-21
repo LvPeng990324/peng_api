@@ -342,8 +342,13 @@ createApp({
     copyToken() {
       this.copyText(this.createdToken.token);
     },
-    async copyText(text) {
-      try {
+    async revealToken(t) {
+      await this.guard(async () => {
+        const v = await api('/tokens/' + t.id);
+        await this.copyText(v.token);
+      });
+    },
+    async copyText(text) {      try {
         await navigator.clipboard.writeText(text);
         this.notice = '已复制到剪贴板';
       } catch (e) {
@@ -370,6 +375,11 @@ createApp({
     pretty(s) {
       if (!s) return '(空)';
       try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s; }
+    },
+    fmtTokens(l) {
+      let s = String(l.prompt_tokens);
+      if (l.prompt_cache_hit_tokens) s += `(${l.prompt_cache_hit_tokens})`;
+      return s + '+' + l.completion_tokens;
     },
   },
   async mounted() {

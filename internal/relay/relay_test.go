@@ -43,30 +43,40 @@ func TestNewUUIDFormat(t *testing.T) {
 }
 
 func TestParseUsage(t *testing.T) {
-	p, c := parseUsage([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	p, c, h := parseUsage([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15,"prompt_cache_hit_tokens":7}}`))
 	if p == nil || *p != 10 || c == nil || *c != 5 {
 		t.Errorf("usage: %v %v", p, c)
 	}
-	p, c = parseUsage([]byte(`{"choices":[]}`))
-	if p != nil || c != nil {
-		t.Errorf("no usage should return nils: %v %v", p, c)
+	if h == nil || *h != 7 {
+		t.Errorf("cache hit: %v", h)
 	}
-	p, c = parseUsage([]byte(`broken`))
-	if p != nil || c != nil {
+	p, c, h = parseUsage([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	if p == nil || h != nil {
+		t.Errorf("cache hit absent should be nil: %v %v", p, h)
+	}
+	p, c, h = parseUsage([]byte(`{"choices":[]}`))
+	if p != nil || c != nil || h != nil {
+		t.Errorf("no usage should return nils: %v %v %v", p, c, h)
+	}
+	p, c, h = parseUsage([]byte(`broken`))
+	if p != nil || c != nil || h != nil {
 		t.Errorf("bad json should return nils")
 	}
 }
 
 func TestParseUsageSSE(t *testing.T) {
 	text := "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n" +
-		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"prompt_cache_hit_tokens\":2}}\n\n" +
 		"data: [DONE]\n\n"
-	p, c := parseUsageSSE(text)
+	p, c, h := parseUsageSSE(text)
 	if p == nil || *p != 3 || c == nil || *c != 1 {
 		t.Errorf("sse usage: %v %v", p, c)
 	}
-	p, c = parseUsageSSE("data: [DONE]\n\n")
-	if p != nil || c != nil {
+	if h == nil || *h != 2 {
+		t.Errorf("sse cache hit: %v", h)
+	}
+	p, c, h = parseUsageSSE("data: [DONE]\n\n")
+	if p != nil || c != nil || h != nil {
 		t.Errorf("no usage chunk should return nils")
 	}
 }

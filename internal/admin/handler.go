@@ -39,7 +39,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			r.Route("/tokens", func(r chi.Router) {
 				r.Get("/", h.listTokens)
 				r.Post("/", h.createToken)
-				r.Put("/{id}", h.updateToken)
+				r.Get("/{id}", h.getToken)
+			r.Put("/{id}", h.updateToken)
 				r.Delete("/{id}", h.deleteToken)
 			})
 			r.Route("/channels", func(r chi.Router) {

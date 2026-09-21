@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
   response_body TEXT NOT NULL DEFAULT '',
   prompt_tokens INTEGER,
   completion_tokens INTEGER,
+  prompt_cache_hit_tokens INTEGER,
   latency_ms INTEGER NOT NULL DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -94,7 +95,35 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	// 旧库补列：CREATE TABLE IF NOT EXISTS 不会更新已存在的表
+	if err := ensureColumn(db, "request_logs", "prompt_cache_hit_tokens", "INTEGER"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// ensureColumn 为已存在的表补列（列已存在时不动）
+func ensureColumn(db *sql.DB, table, column, ddl string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info('` + table + `')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + ddl)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }

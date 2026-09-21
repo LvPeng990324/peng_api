@@ -206,6 +206,13 @@ func TestTokensAPI(t *testing.T) {
 		t.Errorf("token must be masked in list: %q", masked)
 	}
 
+	// 详情接口返回完整 token（管理端复制用）
+	resp = env.call(t, http.MethodGet, "/api/tokens/"+itoa(id), "")
+	v = readJSON(t, resp)
+	if resp.StatusCode != 200 || v["token"].(string) != full {
+		t.Errorf("reveal: %d %v", resp.StatusCode, v)
+	}
+
 	// 更新
 	resp = env.call(t, http.MethodPut, "/api/tokens/"+itoa(id), `{"name":"cline2","enabled":false}`)
 	if resp.StatusCode != 200 {

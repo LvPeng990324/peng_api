@@ -116,7 +116,7 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 			w.Write(res.Body)
 			entry.Status = "success"
 			entry.ResponseBody = string(res.Body)
-			entry.PromptTokens, entry.CompletionTokens = parseUsage(res.Body)
+			entry.PromptTokens, entry.CompletionTokens, entry.PromptCacheHitTokens = parseUsage(res.Body)
 			e.insertLog(&entry)
 			e.recordSuccess(cand.Channel.ID)
 			return

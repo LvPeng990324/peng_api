@@ -46,7 +46,7 @@ func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *s
 			if err == io.EOF {
 				entry.Status = "success"
 				entry.ResponseBody = acc.String()
-				entry.PromptTokens, entry.CompletionTokens = parseUsageSSE(acc.String())
+				entry.PromptTokens, entry.CompletionTokens, entry.PromptCacheHitTokens = parseUsageSSE(acc.String())
 				e.insertLog(entry)
 				e.recordSuccess(channelID)
 			} else {

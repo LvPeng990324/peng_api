@@ -69,6 +69,20 @@ func (s *Store) DeleteToken(ctx context.Context, id int64) error {
 	return err
 }
 
+func (s *Store) GetToken(ctx context.Context, id int64) (*Token, error) {
+	var t Token
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, token, enabled, created_at FROM tokens WHERE id=?`,
+		id).Scan(&t.ID, &t.Name, &t.Token, &t.Enabled, &t.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
 func (s *Store) FindTokenByValue(ctx context.Context, value string) (*Token, error) {
 	var t Token
 	err := s.db.QueryRowContext(ctx,

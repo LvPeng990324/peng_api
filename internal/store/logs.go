@@ -23,8 +23,9 @@ type LogEntry struct {
 	Error            string    `json:"error"`
 	RequestBody      string    `json:"request_body"`
 	ResponseBody     string    `json:"response_body"`
-	PromptTokens     *int      `json:"prompt_tokens"`
-	CompletionTokens *int      `json:"completion_tokens"`
+	PromptTokens         *int      `json:"prompt_tokens"`
+	CompletionTokens     *int      `json:"completion_tokens"`
+	PromptCacheHitTokens *int      `json:"prompt_cache_hit_tokens"`
 	LatencyMS        int64     `json:"latency_ms"`
 	CreatedAt        time.Time `json:"created_at"`
 }
@@ -37,11 +38,11 @@ func (s *Store) InsertLog(ctx context.Context, e LogEntry) (int64, error) {
 		INSERT INTO request_logs
 		(request_id, attempt, token_id, token_name, model_requested, model_canonical,
 		 channel_id, channel_name, stream, status, http_status, error,
-		 request_body, response_body, prompt_tokens, completion_tokens, latency_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 request_body, response_body, prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.RequestID, e.Attempt, e.TokenID, e.TokenName, e.ModelRequested, e.ModelCanonical,
 		e.ChannelID, e.ChannelName, e.Stream, e.Status, e.HTTPStatus, e.Error,
-		e.RequestBody, e.ResponseBody, e.PromptTokens, e.CompletionTokens, e.LatencyMS, e.CreatedAt)
+		e.RequestBody, e.ResponseBody, e.PromptTokens, e.CompletionTokens, e.PromptCacheHitTokens, e.LatencyMS, e.CreatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -98,7 +99,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 	}
 	q := `SELECT id, request_id, attempt, token_id, token_name, model_requested, model_canonical,
 		channel_id, channel_name, stream, status, http_status, error, request_body, response_body,
-		prompt_tokens, completion_tokens, latency_ms, created_at
+		prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at
 		FROM request_logs` + where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, q, append(args, f.Size, (f.Page-1)*f.Size)...)
 	if err != nil {
@@ -120,7 +121,7 @@ func (s *Store) GetLog(ctx context.Context, id int64) (*LogEntry, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, request_id, attempt, token_id, token_name, model_requested, model_canonical,
 		       channel_id, channel_name, stream, status, http_status, error, request_body, response_body,
-		       prompt_tokens, completion_tokens, latency_ms, created_at
+		       prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at
 		FROM request_logs WHERE id=?`, id)
 	e, err := scanLog(row)
 	if err == sql.ErrNoRows {
@@ -133,7 +134,7 @@ func (s *Store) GetLogGroup(ctx context.Context, requestID string) ([]LogEntry, 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, attempt, token_id, token_name, model_requested, model_canonical,
 		       channel_id, channel_name, stream, status, http_status, error, request_body, response_body,
-		       prompt_tokens, completion_tokens, latency_ms, created_at
+		       prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at
 		FROM request_logs WHERE request_id=? ORDER BY attempt ASC`, requestID)
 	if err != nil {
 		return nil, err
@@ -165,11 +166,11 @@ type logScanner interface {
 func scanLog(row logScanner) (*LogEntry, error) {
 	var e LogEntry
 	var tokenID, channelID sql.NullInt64
-	var httpStatus, promptTokens, completionTokens sql.NullInt64
+	var httpStatus, promptTokens, completionTokens, cacheHit sql.NullInt64
 	err := row.Scan(&e.ID, &e.RequestID, &e.Attempt, &tokenID, &e.TokenName,
 		&e.ModelRequested, &e.ModelCanonical, &channelID, &e.ChannelName, &e.Stream,
 		&e.Status, &httpStatus, &e.Error, &e.RequestBody, &e.ResponseBody,
-		&promptTokens, &completionTokens, &e.LatencyMS, &e.CreatedAt)
+		&promptTokens, &completionTokens, &cacheHit, &e.LatencyMS, &e.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +191,10 @@ func scanLog(row logScanner) (*LogEntry, error) {
 	if completionTokens.Valid {
 		v := int(completionTokens.Int64)
 		e.CompletionTokens = &v
+	}
+	if cacheHit.Valid {
+		v := int(cacheHit.Int64)
+		e.PromptCacheHitTokens = &v
 	}
 	return &e, nil
 }

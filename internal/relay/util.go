@@ -34,21 +34,22 @@ func newUUID() string {
 }
 
 type usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens         int  `json:"prompt_tokens"`
+	CompletionTokens     int  `json:"completion_tokens"`
+	PromptCacheHitTokens *int `json:"prompt_cache_hit_tokens"`
 }
 
-func parseUsage(body []byte) (prompt, completion *int) {
+func parseUsage(body []byte) (prompt, completion, cacheHit *int) {
 	var v struct {
 		Usage *usage `json:"usage"`
 	}
 	if json.Unmarshal(body, &v) != nil || v.Usage == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
-	return &v.Usage.PromptTokens, &v.Usage.CompletionTokens
+	return &v.Usage.PromptTokens, &v.Usage.CompletionTokens, v.Usage.PromptCacheHitTokens
 }
 
-func parseUsageSSE(text string) (prompt, completion *int) {
+func parseUsageSSE(text string) (prompt, completion, cacheHit *int) {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data:") {
@@ -58,8 +59,8 @@ func parseUsageSSE(text string) (prompt, completion *int) {
 		if data == "[DONE]" {
 			continue
 		}
-		if p, c := parseUsage([]byte(data)); p != nil {
-			prompt, completion = p, c
+		if p, c, h := parseUsage([]byte(data)); p != nil {
+			prompt, completion, cacheHit = p, c, h
 		}
 	}
 	return

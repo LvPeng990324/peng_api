@@ -58,6 +58,24 @@ func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, t) // 完整 token 仅此一次返回
 }
 
+func (h *Handler) getToken(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	t, err := h.store.GetToken(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if t == nil {
+		writeErr(w, http.StatusNotFound, "token not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": t.ID, "name": t.Name, "token": t.Token})
+}
+
 func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
