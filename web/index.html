@@ -76,7 +76,7 @@
             <td>{{ c.name }}</td>
             <td class="mono wrap">{{ c.base_url }}</td>
             <td>{{ c.priority }}</td>
-            <td>{{ c.models.length }}</td>
+            <td><a class="td-link" @click="showChannelModels(c)">{{ c.models.length }}</a></td>
             <td>
               <span v-if="!c.enabled" class="tag gray">已停用</span>
               <span v-else-if="c.auto_disabled" class="tag red" :title="'冷却至 ' + fmtTime(c.disabled_until)">自动禁用</span>
@@ -242,31 +242,84 @@
       </div>
     </div>
 
+    <!-- ============ 渠道绑定模型弹窗 ============ -->
+    <div class="mask" v-if="chModelsDlg" @click.self="chModelsDlg=null">
+      <div class="card modal">
+        <h3>绑定模型：{{ chModelsDlg.channel }}</h3>
+        <table>
+          <thead><tr><th>标准模型</th><th>上游模型名</th></tr></thead>
+          <tbody>
+            <tr v-for="m in chModelsDlg.models" :key="m.model_id + m.upstream_model">
+              <td class="mono">{{ m.name }}</td>
+              <td class="mono">{{ m.upstream_model || '（同标准名）' }}</td>
+            </tr>
+            <tr v-if="!chModelsDlg.models.length"><td colspan="2" class="empty">未绑定任何模型</td></tr>
+          </tbody>
+        </table>
+        <div class="actions"><button @click="chModelsDlg=null">关闭</button></div>
+      </div>
+    </div>
+
     <!-- ============ 获取模型弹窗 ============ -->
     <div class="mask" v-if="fetchDlg" @click.self="fetchDlg=null">
       <div class="card modal wide">
-        <h3>获取到的上游模型</h3>
-        <p class="dim">勾选要绑定的模型，并为每个选择对应的标准模型（或新建）。</p>
+        <h3>获取到的上游模型：{{ fetchDlg.channelName }}</h3>
+        <p class="dim">勾选要绑定的模型，并为每个选择对应的标准模型（或新建）。「已有」默认勾选；「已失效」仅展示，解绑请到渠道编辑中移除。</p>
         <div class="bar">
           <input v-model="fetchDlg.filter" placeholder="按上游模型名筛选…">
         </div>
-        <table>
-          <thead><tr><th><input type="checkbox" :checked="allFetchChecked" @change="toggleFetchAll"></th><th>上游模型</th><th>上下文</th><th>绑定到</th></tr></thead>
-          <tbody>
-            <tr v-for="r in fetchRows" :key="r.upstream_id">
-              <td><input type="checkbox" v-model="r.checked"></td>
-              <td class="mono">{{ r.upstream_id }}</td>
-              <td>{{ r.context_length ?? '-' }}</td>
-              <td>
-                <select v-model="r.target">
-                  <option value="__new__">＋新建：{{ r.suggested_name }}</option>
-                  <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-                </select>
-              </td>
-            </tr>
-            <tr v-if="!fetchRows.length"><td colspan="4" class="empty">没有匹配「{{ fetchDlg.filter }}」的模型</td></tr>
-          </tbody>
-        </table>
+        <details open class="fetch-group">
+          <summary>已有（{{ existingRows.length }}）</summary>
+          <table>
+            <thead><tr><th><input type="checkbox" :checked="allFetchChecked" @change="toggleFetchAll"></th><th>上游模型</th><th>上下文</th><th>绑定到</th></tr></thead>
+            <tbody>
+              <tr v-for="r in existingRows" :key="r.upstream_id">
+                <td><input type="checkbox" v-model="r.checked"></td>
+                <td class="mono">{{ r.upstream_id }}</td>
+                <td>{{ r.context_length ?? '-' }}</td>
+                <td>
+                  <select v-model="r.target">
+                    <option value="__new__">＋新建：{{ r.suggested_name }}</option>
+                    <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
+                  </select>
+                </td>
+              </tr>
+              <tr v-if="!existingRows.length"><td colspan="4" class="empty">无</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <details open class="fetch-group">
+          <summary>可增加（{{ newRows.length }}）</summary>
+          <table>
+            <thead><tr><th></th><th>上游模型</th><th>上下文</th><th>绑定到</th></tr></thead>
+            <tbody>
+              <tr v-for="r in newRows" :key="r.upstream_id">
+                <td><input type="checkbox" v-model="r.checked"></td>
+                <td class="mono">{{ r.upstream_id }}</td>
+                <td>{{ r.context_length ?? '-' }}</td>
+                <td>
+                  <select v-model="r.target">
+                    <option value="__new__">＋新建：{{ r.suggested_name }}</option>
+                    <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
+                  </select>
+                </td>
+              </tr>
+              <tr v-if="!newRows.length"><td colspan="4" class="empty">无</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <details v-if="staleRows.length" open class="fetch-group">
+          <summary>已失效（{{ staleRows.length }}）</summary>
+          <table>
+            <thead><tr><th>标准模型</th><th>上游模型名</th></tr></thead>
+            <tbody>
+              <tr v-for="s in staleRows" :key="s.model_id + s.upstream_name">
+                <td class="mono">{{ s.name }}</td>
+                <td class="mono">{{ s.upstream_name }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </details>
         <div class="actions">
           <button class="primary" @click="saveFetch">绑定选中项</button>
           <button @click="fetchDlg=null">取消</button>

@@ -38,6 +38,7 @@ createApp({
       logFilter: { model: '', status: '', token_id: '', channel_id: '' },
       chForm: null,
       boundDlg: null,
+      chModelsDlg: null,
       fetchDlg: null,
       testResult: null,
       modelForm: null,
@@ -78,6 +79,19 @@ createApp({
       const q = (this.fetchDlg.filter || '').trim().toLowerCase();
       if (!q) return this.fetchDlg.rows;
       return this.fetchDlg.rows.filter(r => r.upstream_id.toLowerCase().includes(q));
+    },
+    existingRows() {
+      return this.fetchRows.filter(r => r.category === 'existing');
+    },
+    newRows() {
+      return this.fetchRows.filter(r => r.category === 'new');
+    },
+    staleRows() {
+      if (!this.fetchDlg) return [];
+      const q = (this.fetchDlg.filter || '').trim().toLowerCase();
+      if (!q) return this.fetchDlg.stale;
+      return this.fetchDlg.stale.filter(s =>
+        s.name.toLowerCase().includes(q) || s.upstream_name.toLowerCase().includes(q));
     },
     allFetchChecked() {
       return this.fetchRows.length > 0 && this.fetchRows.every(r => r.checked);
@@ -131,6 +145,17 @@ createApp({
         .filter(c => (c.models || []).some(b => b.model_id === m.id))
         .map(c => ({ id: c.id, name: c.name }));
       this.boundDlg = { model: m.name, channels };
+    },
+    showChannelModels(c) {
+      const models = (c.models || []).map(b => {
+        const m = this.models.find(x => x.id === b.model_id);
+        return {
+          model_id: b.model_id,
+          name: m ? m.name : ('#' + b.model_id),
+          upstream_model: b.upstream_model,
+        };
+      });
+      this.chModelsDlg = { channel: c.name, models };
     },
     toggleFetchAll(e) {
       const v = e.target.checked;
@@ -203,18 +228,34 @@ createApp({
     async fetchModels(c) {
       await this.guard(async () => {
         const v = await api('/channels/' + c.id + '/fetch-models', { method: 'POST' });
-        this.fetchDlg = {
-          channelID: c.id,
-          filter: '',
-          rows: (v.data || []).map(r => ({
-            checked: true,
+        const stdName = id => {
+          const m = this.models.find(x => x.id === id);
+          return m ? m.name : '';
+        };
+        const bindings = c.models || [];
+        const effName = b => (b.upstream_model || stdName(b.model_id)).toLowerCase();
+        const boundNames = new Set(bindings.map(effName));
+        const upstreamNames = new Set((v.data || []).map(r => r.upstream_id.toLowerCase()));
+        const rows = (v.data || []).map(r => {
+          const existing = boundNames.has(r.upstream_id.toLowerCase());
+          return {
+            checked: existing,
+            category: existing ? 'existing' : 'new',
             upstream_id: r.upstream_id,
             context_length: r.context_length,
             max_output_tokens: r.max_output_tokens,
             suggested_name: r.suggested_name,
             target: r.suggested_model_id || '__new__',
-          })),
-        };
+          };
+        });
+        const stale = bindings
+          .filter(b => !upstreamNames.has(effName(b)))
+          .map(b => ({
+            model_id: b.model_id,
+            name: stdName(b.model_id) || ('#' + b.model_id),
+            upstream_name: b.upstream_model || stdName(b.model_id),
+          }));
+        this.fetchDlg = { channelID: c.id, channelName: c.name, filter: '', rows, stale };
       });
     },
     async saveFetch() {
