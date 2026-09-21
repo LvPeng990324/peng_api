@@ -10,13 +10,13 @@
 
 - 构建：`go build -o peng_api .`
 - 测试：`go test ./...`（转发路径改动后加 `-race` 跑一遍）
-- 运行：`PENG_ADMIN_PASSWORD=xxx ./peng_api`
+- 运行：`./peng_api`（配置见 `.env`，可复制 `.env.example`；也可用 `-admin-password` 等 flag 或 `PENG_*` 环境变量）
 - 静态检查：`go vet ./...`
 
 ## 目录结构
 
 - `main.go` — 装配入口（config→store→provider→engine→admin→web→server）
-- `internal/config` — flag/env 配置解析
+- `internal/config` — flag/env/.env 配置解析（优先级：flag > 环境变量 > .env > 默认值）
 - `internal/store` — SQLite 访问层（models/channels/tokens/logs 四个文件按资源分）
 - `internal/relay` — 转发引擎：`handler.go`（/v1 入口）、`engine.go`（重试循环）、`stream.go`（SSE）、`util.go`（工具）
 - `internal/relay/provider` — 上游协议抽象；新增协议（如 anthropic）在此实现 `Provider` 接口并注册进 `main.go` 的 Registry

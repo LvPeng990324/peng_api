@@ -3,3 +3,4 @@ peng_api.exe
 peng.db
 peng.db-*
 /tmp/
+.env
