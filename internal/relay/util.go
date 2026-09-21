@@ -34,9 +34,38 @@ func newUUID() string {
 }
 
 type usage struct {
-	PromptTokens         int  `json:"prompt_tokens"`
-	CompletionTokens     int  `json:"completion_tokens"`
-	PromptCacheHitTokens *int `json:"prompt_cache_hit_tokens"`
+	PromptTokens     int            `json:"prompt_tokens"`
+	CompletionTokens int            `json:"completion_tokens"`
+
+	// 各上游缓存命中字段不同，按优先级取第一个非空：
+	// DeepSeek 系 → prompt_cache_hit_tokens；Kimi → cached_tokens；
+	// Anthropic → cache_read_input_tokens；Gemini → cached_content_token_count；
+	// OpenAI 系兜底 → prompt_tokens_details.cached_tokens
+	PromptCacheHitTokens    *int `json:"prompt_cache_hit_tokens"`
+	CachedTokens            *int `json:"cached_tokens"`
+	CacheReadInputTokens    *int `json:"cache_read_input_tokens"`
+	CachedContentTokenCount *int `json:"cached_content_token_count"`
+
+	PromptTokensDetails *struct {
+		CachedTokens *int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+func (u *usage) cacheHit() *int {
+	for _, v := range []*int{
+		u.PromptCacheHitTokens,
+		u.CachedTokens,
+		u.CacheReadInputTokens,
+		u.CachedContentTokenCount,
+	} {
+		if v != nil {
+			return v
+		}
+	}
+	if u.PromptTokensDetails != nil {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	return nil
 }
 
 func parseUsage(body []byte) (prompt, completion, cacheHit *int) {
@@ -46,7 +75,7 @@ func parseUsage(body []byte) (prompt, completion, cacheHit *int) {
 	if json.Unmarshal(body, &v) != nil || v.Usage == nil {
 		return nil, nil, nil
 	}
-	return &v.Usage.PromptTokens, &v.Usage.CompletionTokens, v.Usage.PromptCacheHitTokens
+	return &v.Usage.PromptTokens, &v.Usage.CompletionTokens, v.Usage.cacheHit()
 }
 
 func parseUsageSSE(text string) (prompt, completion, cacheHit *int) {

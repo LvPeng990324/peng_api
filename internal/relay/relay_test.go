@@ -64,6 +64,35 @@ func TestParseUsage(t *testing.T) {
 	}
 }
 
+func TestParseUsageCacheHitVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"deepseek", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_cache_hit_tokens":7}}`, 7},
+		{"kimi", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"cached_tokens":6,"prompt_tokens_details":{"cached_tokens":6}}}`, 6},
+		{"kimi non-stream small prompt no cache", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":0}}}`, 0},
+		{"anthropic", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"cache_read_input_tokens":8}}`, 8},
+		{"gemini", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"cached_content_token_count":9}}`, 9},
+		{"openai details only", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":4}}}`, 4},
+		{"priority deepseek over details", `{"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_cache_hit_tokens":7,"cached_tokens":6,"prompt_tokens_details":{"cached_tokens":6}}}`, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, h := parseUsage([]byte(tc.body))
+			if h == nil || *h != tc.want {
+				t.Errorf("got %v, want %d", h, tc.want)
+			}
+		})
+	}
+	// 全缺省 → nil
+	_, _, h := parseUsage([]byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	if h != nil {
+		t.Errorf("no cache fields should be nil, got %v", *h)
+	}
+}
+
 func TestParseUsageSSE(t *testing.T) {
 	text := "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n" +
 		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"prompt_cache_hit_tokens\":2}}\n\n" +
