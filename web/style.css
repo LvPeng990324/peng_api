@@ -186,8 +186,8 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   display: flex; align-items: flex-start; justify-content: center;
   padding: 40px 16px; z-index: 30; overflow-y: auto;
 }
-.modal { width: 560px; max-height: 85vh; overflow-y: auto; }
-.modal.wide { width: 860px; }
+.modal { width: fit-content; min-width: 560px; max-width: 95vw; max-height: 85vh; overflow: auto; }
+.modal.wide { min-width: 860px; }
 .modal label { display: block; margin-bottom: 12px; font-size: 13px; color: var(--text-dim); }
 .modal label input, .modal label select, .modal label textarea { display: block; width: 100%; margin-top: 5px; }
 .modal label.row input { display: inline; width: auto; }
