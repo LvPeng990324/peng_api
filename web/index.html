@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>peng_api 管理</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app" v-cloak>
+  <!-- 登录 -->
+  <div v-if="!authed" class="login-wrap">
+    <div class="card login-card">
+      <h2>peng_api</h2>
+      <input type="password" v-model="password" placeholder="管理密码" @keyup.enter="login" autofocus>
+      <button class="primary block" @click="login">登录</button>
+      <p class="err" v-if="loginErr">{{ loginErr }}</p>
+    </div>
+  </div>
+
+  <div v-else>
+    <nav class="nav">
+      <span class="brand">peng_api</span>
+      <a v-for="t in tabs" :key="t.key" :class="{on: tab===t.key}" @click="switchTab(t.key)">{{ t.label }}</a>
+      <a class="right" @click="logout">退出</a>
+    </nav>
+    <p class="err global-err" v-if="err">{{ err }}</p>
+
+    <!-- ============ 渠道 ============ -->
+    <section v-if="tab==='channels'">
+      <div class="bar">
+        <h3>渠道</h3>
+        <button class="primary" @click="openChannelForm(null)">新建渠道</button>
+      </div>
+      <table>
+        <thead><tr>
+          <th>ID</th><th>名称</th><th>地址</th><th>优先级</th><th>模型数</th><th>状态</th><th>连续失败</th><th>操作</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="c in channels" :key="c.id">
+            <td>{{ c.id }}</td>
+            <td>{{ c.name }}</td>
+            <td class="mono wrap">{{ c.base_url }}</td>
+            <td>{{ c.priority }}</td>
+            <td>{{ c.models.length }}</td>
+            <td>
+              <span v-if="!c.enabled" class="tag gray">已停用</span>
+              <span v-else-if="c.auto_disabled" class="tag red" :title="'冷却至 ' + fmtTime(c.disabled_until)">自动禁用</span>
+              <span v-else class="tag green">正常</span>
+            </td>
+            <td>{{ c.consecutive_failures }}</td>
+            <td class="ops">
+              <a @click="openChannelForm(c)">编辑</a>
+              <a @click="fetchModels(c)">获取模型</a>
+              <a @click="testChannel(c)">测试</a>
+              <a v-if="c.auto_disabled" @click="resetChannel(c)">重置</a>
+              <a @click="toggleChannel(c)">{{ c.enabled ? '停用' : '启用' }}</a>
+              <a class="danger" @click="delChannel(c)">删除</a>
+            </td>
+          </tr>
+          <tr v-if="!channels.length"><td colspan="8" class="empty">暂无渠道，点击右上角新建</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ 模型与别名 ============ -->
+    <section v-if="tab==='models'">
+      <div class="bar">
+        <h3>模型与别名</h3>
+        <button class="primary" @click="openModelForm(null)">新建模型</button>
+      </div>
+      <table>
+        <thead><tr>
+          <th>ID</th><th>标准名</th><th>别名</th><th>上下文长度</th><th>最大输出</th><th>渠道数</th><th>操作</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="m in models" :key="m.id">
+            <td>{{ m.id }}</td>
+            <td class="mono">{{ m.name }}</td>
+            <td class="mono wrap">{{ (m.aliases||[]).join(', ') || '-' }}</td>
+            <td>{{ m.context_length ?? '-' }}</td>
+            <td>{{ m.max_output_tokens ?? '-' }}</td>
+            <td>{{ m.bound_channels }}</td>
+            <td class="ops">
+              <a @click="openModelForm(m)">编辑</a>
+              <a class="danger" @click="delModel(m)">删除</a>
+            </td>
+          </tr>
+          <tr v-if="!models.length"><td colspan="7" class="empty">暂无模型</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ Token ============ -->
+    <section v-if="tab==='tokens'">
+      <div class="bar">
+        <h3>API Token</h3>
+        <div>
+          <input v-model="newTokenName" placeholder="名称（如 cline）">
+          <button class="primary" @click="createToken">新建 Token</button>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>ID</th><th>名称</th><th>Token</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+        <tbody>
+          <tr v-for="t in tokens" :key="t.id">
+            <td>{{ t.id }}</td>
+            <td>{{ t.name }}</td>
+            <td class="mono">{{ t.token }}</td>
+            <td><span class="tag" :class="t.enabled ? 'green' : 'gray'">{{ t.enabled ? '启用' : '禁用' }}</span></td>
+            <td>{{ fmtTime(t.created_at) }}</td>
+            <td class="ops">
+              <a @click="toggleToken(t)">{{ t.enabled ? '禁用' : '启用' }}</a>
+              <a class="danger" @click="delToken(t)">删除</a>
+            </td>
+          </tr>
+          <tr v-if="!tokens.length"><td colspan="6" class="empty">暂无 token</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ 日志 ============ -->
+    <section v-if="tab==='logs'">
+      <div class="bar">
+        <h3>请求日志</h3>
+        <div class="filters">
+          <input v-model="logFilter.model" placeholder="模型（模糊）">
+          <select v-model="logFilter.status">
+            <option value="">全部状态</option>
+            <option value="success">success</option>
+            <option value="failed">failed</option>
+          </select>
+          <select v-model="logFilter.token_id">
+            <option value="">全部 token</option>
+            <option v-for="t in tokens" :key="t.id" :value="String(t.id)">{{ t.name }}</option>
+          </select>
+          <select v-model="logFilter.channel_id">
+            <option value="">全部渠道</option>
+            <option v-for="c in channels" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
+          </select>
+          <button class="primary" @click="searchLogs">查询</button>
+        </div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>时间</th><th>模型</th><th>渠道</th><th>Token</th><th>状态</th><th>HTTP</th><th>耗时</th><th>tokens</th><th>操作</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="l in logs.data" :key="l.id">
+            <td class="nowrap">{{ fmtTime(l.created_at) }}</td>
+            <td class="mono">{{ l.model_requested }}<template v-if="l.model_canonical && l.model_canonical !== l.model_requested"> → {{ l.model_canonical }}</template></td>
+            <td>{{ l.channel_name || '-' }}<span class="dim">#{{ l.attempt }}</span></td>
+            <td>{{ l.token_name || '-' }}</td>
+            <td><span class="tag" :class="l.status==='success' ? 'green' : 'red'">{{ l.status }}</span></td>
+            <td>{{ l.http_status ?? '-' }}</td>
+            <td>{{ l.latency_ms }}ms</td>
+            <td>{{ l.prompt_tokens != null ? (l.prompt_tokens + '+' + l.completion_tokens) : '-' }}</td>
+            <td class="ops"><a @click="openLogDetail(l)">详情</a></td>
+          </tr>
+          <tr v-if="!logs.data.length"><td colspan="9" class="empty">暂无日志</td></tr>
+        </tbody>
+      </table>
+      <div class="pager">
+        <button :disabled="logs.page<=1" @click="pageLogs(-1)">上一页</button>
+        <span>第 {{ logs.page }} 页 / 共 {{ logs.total }} 条</span>
+        <button :disabled="logs.page>=logPages" @click="pageLogs(1)">下一页</button>
+      </div>
+    </section>
+
+    <!-- ============ 渠道编辑弹窗 ============ -->
+    <div class="mask" v-if="chForm" @click.self="chForm=null">
+      <div class="card modal">
+        <h3>{{ chForm.id ? '编辑渠道' : '新建渠道' }}</h3>
+        <label>名称<input v-model="chForm.name"></label>
+        <label>上游地址（base_url）<input v-model="chForm.base_url" placeholder="https://api.example.com/v1"></label>
+        <label>API Key<input v-model="chForm.api_key"></label>
+        <label>优先级（越大越优先）<input type="number" v-model.number="chForm.priority"></label>
+        <label>测试模型（连通性测试用，选便宜的）
+          <select v-model="chForm.test_model">
+            <option value="">-- 未配置 --</option>
+            <option v-for="opt in testModelOptions" :key="opt" :value="opt">{{ opt }}</option>
+          </select>
+        </label>
+        <label class="row"><input type="checkbox" v-model="chForm.enabled"> 启用</label>
+        <h4>模型绑定</h4>
+        <table>
+          <thead><tr><th>标准模型</th><th>上游模型名（空=用标准名）</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="(b, i) in chForm.models" :key="i">
+              <td>
+                <select v-model.number="b.model_id">
+                  <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
+                </select>
+              </td>
+              <td><input v-model="b.upstream_model" placeholder="留空则用标准名"></td>
+              <td><a class="danger" @click="chForm.models.splice(i,1)">移除</a></td>
+            </tr>
+          </tbody>
+        </table>
+        <button @click="addBinding">添加绑定</button>
+        <div class="actions">
+          <button class="primary" @click="saveChannel">保存</button>
+          <button @click="chForm=null">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 获取模型弹窗 ============ -->
+    <div class="mask" v-if="fetchDlg" @click.self="fetchDlg=null">
+      <div class="card modal wide">
+        <h3>获取到的上游模型</h3>
+        <p class="dim">勾选要绑定的模型，并为每个选择对应的标准模型（或新建）。</p>
+        <table>
+          <thead><tr><th></th><th>上游模型</th><th>上下文</th><th>绑定到</th></tr></thead>
+          <tbody>
+            <tr v-for="r in fetchDlg.rows" :key="r.upstream_id">
+              <td><input type="checkbox" v-model="r.checked"></td>
+              <td class="mono">{{ r.upstream_id }}</td>
+              <td>{{ r.context_length ?? '-' }}</td>
+              <td>
+                <select v-model="r.target">
+                  <option value="__new__">＋新建：{{ r.suggested_name }}</option>
+                  <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
+                </select>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="actions">
+          <button class="primary" @click="saveFetch">绑定选中项</button>
+          <button @click="fetchDlg=null">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 测试结果弹窗 ============ -->
+    <div class="mask" v-if="testResult" @click.self="testResult=null">
+      <div class="card modal wide">
+        <h3>连通性测试：{{ testResult.channel }}</h3>
+        <p v-if="testResult.loading">测试中…</p>
+        <template v-else>
+          <p>
+            <span class="tag" :class="testResult.result.success ? 'green' : 'red'">
+              {{ testResult.result.success ? '成功' : '失败' }}
+            </span>
+            耗时 {{ testResult.result.latency_ms }}ms
+            <template v-if="testResult.result.http_status">HTTP {{ testResult.result.http_status }}</template>
+          </p>
+          <p class="err" v-if="testResult.result.error">{{ testResult.result.error }}</p>
+          <h4>请求</h4><pre>{{ pretty(testResult.result.request_body) }}</pre>
+          <h4>响应</h4><pre>{{ pretty(testResult.result.response_body || '') }}</pre>
+        </template>
+        <div class="actions"><button @click="testResult=null">关闭</button></div>
+      </div>
+    </div>
+
+    <!-- ============ 模型编辑弹窗 ============ -->
+    <div class="mask" v-if="modelForm" @click.self="modelForm=null">
+      <div class="card modal">
+        <h3>{{ modelForm.id ? '编辑模型' : '新建模型' }}</h3>
+        <label>标准名<input v-model="modelForm.name" placeholder="如 glm-5.3"></label>
+        <label>别名（每行一个，匹配大小写不敏感）
+          <textarea v-model="modelForm.aliasesText" rows="4" placeholder="GLM-5.3&#10;glm5.3"></textarea>
+        </label>
+        <label>上下文长度（可空）<input type="number" v-model.number="modelForm.context_length"></label>
+        <label>最大输出 tokens（可空）<input type="number" v-model.number="modelForm.max_output_tokens"></label>
+        <div class="actions">
+          <button class="primary" @click="saveModel">保存</button>
+          <button @click="modelForm=null">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 新 token 弹窗 ============ -->
+    <div class="mask" v-if="createdToken" @click.self="createdToken=null">
+      <div class="card modal">
+        <h3>Token 已创建</h3>
+        <p class="err">这是唯一一次完整显示，请立即复制保存：</p>
+        <pre class="token-full">{{ createdToken.token }}</pre>
+        <div class="actions"><button class="primary" @click="copyToken">复制</button><button @click="createdToken=null">关闭</button></div>
+      </div>
+    </div>
+
+    <!-- ============ 日志详情弹窗 ============ -->
+    <div class="mask" v-if="logDetail" @click.self="logDetail=null">
+      <div class="card modal wide">
+        <h3>请求详情 <span class="dim mono">{{ logDetail.data.request_id }}</span></h3>
+        <div class="attempt-tabs">
+          <button v-for="a in logDetail.attempts" :key="a.id"
+                  :class="{on: logDetail.sel===a.id}" @click="logDetail.sel=a.id">
+            第{{ a.attempt }}次 {{ a.channel_name }}
+            <span :class="a.status==='success'?'green-text':'red-text'">{{ a.status }}</span>
+          </button>
+        </div>
+        <template v-if="selAttempt">
+          <p class="dim">
+            HTTP {{ selAttempt.http_status ?? '-' }} · {{ selAttempt.latency_ms }}ms ·
+            {{ selAttempt.stream ? '流式' : '非流式' }} · {{ fmtTime(selAttempt.created_at) }}
+          </p>
+          <p class="err" v-if="selAttempt.error">{{ selAttempt.error }}</p>
+          <h4>请求体</h4><pre>{{ pretty(selAttempt.request_body) }}</pre>
+          <h4>响应体</h4><pre>{{ pretty(selAttempt.response_body) }}</pre>
+        </template>
+        <div class="actions"><button @click="logDetail=null">关闭</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/vendor/vue.global.prod.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
