@@ -104,6 +104,7 @@ body {
 
 .err { color: var(--red-fg); }
 .global-err { margin: 12px 24px 0; padding: 10px 14px; background: var(--red-bg); border-radius: 8px; }
+.global-err.notice { background: var(--green-bg); color: var(--green-fg); }
 
 section { padding: 20px 24px; }
 .bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }

@@ -59,6 +59,7 @@
         <h2>{{ tabLabel }}</h2>
       </header>
       <p class="err global-err" v-if="err">{{ err }}</p>
+      <p class="notice global-err" v-if="notice">{{ notice }}</p>
 
     <!-- ============ 渠道 ============ -->
     <section v-if="tab==='channels'">
@@ -141,7 +142,7 @@
           <tr v-for="t in tokens" :key="t.id">
             <td>{{ t.id }}</td>
             <td>{{ t.name }}</td>
-            <td class="mono">{{ t.token }}</td>
+            <td class="mono"><a class="td-link" :title="'点击复制'" @click="copyText(t.token)">{{ t.token }}</a></td>
             <td><span class="tag" :class="t.enabled ? 'green' : 'gray'">{{ t.enabled ? '启用' : '禁用' }}</span></td>
             <td>{{ fmtTime(t.created_at) }}</td>
             <td class="ops">

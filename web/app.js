@@ -23,6 +23,7 @@ createApp({
       password: '',
       loginErr: '',
       err: '',
+      notice: '',
       tab: 'channels',
       sidebarOpen: false,
       tabs: [
@@ -339,7 +340,17 @@ createApp({
       });
     },
     copyToken() {
-      navigator.clipboard && navigator.clipboard.writeText(this.createdToken.token);
+      this.copyText(this.createdToken.token);
+    },
+    async copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        this.notice = '已复制到剪贴板';
+      } catch (e) {
+        this.notice = '复制失败：' + e.message;
+      }
+      clearTimeout(this._noticeTimer);
+      this._noticeTimer = setTimeout(() => { this.notice = ''; }, 2000);
     },
 
     // ---- 日志 ----
