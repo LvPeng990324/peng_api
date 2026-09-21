@@ -37,6 +37,7 @@ createApp({
       logs: { data: [], total: 0, page: 1, size: 20 },
       logFilter: { model: '', status: '', token_id: '', channel_id: '' },
       chForm: null,
+      boundDlg: null,
       fetchDlg: null,
       testResult: null,
       modelForm: null,
@@ -65,6 +66,21 @@ createApp({
     selAttempt() {
       if (!this.logDetail) return null;
       return this.logDetail.attempts.find(a => a.id === this.logDetail.sel) || this.logDetail.data;
+    },
+    sortedChannels() {
+      // 状态（正常在前）→ 优先级（大在前）→ id（小在前）
+      const status = c => (c.enabled && !c.auto_disabled) ? 0 : 1;
+      return [...this.channels].sort((a, b) =>
+        status(a) - status(b) || b.priority - a.priority || a.id - b.id);
+    },
+    fetchRows() {
+      if (!this.fetchDlg) return [];
+      const q = (this.fetchDlg.filter || '').trim().toLowerCase();
+      if (!q) return this.fetchDlg.rows;
+      return this.fetchDlg.rows.filter(r => r.upstream_id.toLowerCase().includes(q));
+    },
+    allFetchChecked() {
+      return this.fetchRows.length > 0 && this.fetchRows.every(r => r.checked);
     },
   },
   methods: {
@@ -110,6 +126,16 @@ createApp({
     },
     async loadChannels() { await this.guard(async () => { this.channels = (await api('/channels')).data || []; }); },
     async loadModels() { await this.guard(async () => { this.models = (await api('/models')).data || []; }); },
+    showBound(m) {
+      const channels = this.channels
+        .filter(c => (c.models || []).some(b => b.model_id === m.id))
+        .map(c => ({ id: c.id, name: c.name }));
+      this.boundDlg = { model: m.name, channels };
+    },
+    toggleFetchAll(e) {
+      const v = e.target.checked;
+      this.fetchRows.forEach(r => { r.checked = v; });
+    },
     async loadTokens() { await this.guard(async () => { this.tokens = (await api('/tokens')).data || []; }); },
     async loadLogs() {
       await this.guard(async () => {
@@ -179,6 +205,7 @@ createApp({
         const v = await api('/channels/' + c.id + '/fetch-models', { method: 'POST' });
         this.fetchDlg = {
           channelID: c.id,
+          filter: '',
           rows: (v.data || []).map(r => ({
             checked: true,
             upstream_id: r.upstream_id,

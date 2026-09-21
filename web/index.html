@@ -71,7 +71,7 @@
           <th>ID</th><th>名称</th><th>地址</th><th>优先级</th><th>模型数</th><th>状态</th><th>连续失败</th><th>操作</th>
         </tr></thead>
         <tbody>
-          <tr v-for="c in channels" :key="c.id">
+          <tr v-for="c in sortedChannels" :key="c.id">
             <td>{{ c.id }}</td>
             <td>{{ c.name }}</td>
             <td class="mono wrap">{{ c.base_url }}</td>
@@ -106,22 +106,21 @@
       <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>ID</th><th>标准名</th><th>别名</th><th>上下文长度</th><th>最大输出</th><th>渠道数</th><th>操作</th>
+          <th>标准名</th><th>别名</th><th>上下文长度</th><th>最大输出</th><th>渠道数</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="m in models" :key="m.id">
-            <td>{{ m.id }}</td>
             <td class="mono">{{ m.name }}</td>
             <td class="mono wrap">{{ (m.aliases||[]).join(', ') || '-' }}</td>
             <td>{{ m.context_length ?? '-' }}</td>
             <td>{{ m.max_output_tokens ?? '-' }}</td>
-            <td>{{ m.bound_channels }}</td>
+            <td><a class="td-link" @click="showBound(m)">{{ m.bound_channels }}</a></td>
             <td class="ops">
               <a @click="openModelForm(m)">编辑</a>
               <a class="danger" @click="delModel(m)">删除</a>
             </td>
           </tr>
-          <tr v-if="!models.length"><td colspan="7" class="empty">暂无模型</td></tr>
+          <tr v-if="!models.length"><td colspan="6" class="empty">暂无模型</td></tr>
         </tbody>
       </table>
       </div>
@@ -248,10 +247,13 @@
       <div class="card modal wide">
         <h3>获取到的上游模型</h3>
         <p class="dim">勾选要绑定的模型，并为每个选择对应的标准模型（或新建）。</p>
+        <div class="bar">
+          <input v-model="fetchDlg.filter" placeholder="按上游模型名筛选…">
+        </div>
         <table>
-          <thead><tr><th></th><th>上游模型</th><th>上下文</th><th>绑定到</th></tr></thead>
+          <thead><tr><th><input type="checkbox" :checked="allFetchChecked" @change="toggleFetchAll"></th><th>上游模型</th><th>上下文</th><th>绑定到</th></tr></thead>
           <tbody>
-            <tr v-for="r in fetchDlg.rows" :key="r.upstream_id">
+            <tr v-for="r in fetchRows" :key="r.upstream_id">
               <td><input type="checkbox" v-model="r.checked"></td>
               <td class="mono">{{ r.upstream_id }}</td>
               <td>{{ r.context_length ?? '-' }}</td>
@@ -262,6 +264,7 @@
                 </select>
               </td>
             </tr>
+            <tr v-if="!fetchRows.length"><td colspan="4" class="empty">没有匹配「{{ fetchDlg.filter }}」的模型</td></tr>
           </tbody>
         </table>
         <div class="actions">
@@ -289,6 +292,24 @@
           <h4>响应</h4><pre>{{ pretty(testResult.result.response_body || '') }}</pre>
         </template>
         <div class="actions"><button @click="testResult=null">关闭</button></div>
+      </div>
+    </div>
+
+    <!-- ============ 绑定渠道弹窗 ============ -->
+    <div class="mask" v-if="boundDlg" @click.self="boundDlg=null">
+      <div class="card modal">
+        <h3>绑定渠道：{{ boundDlg.model }}</h3>
+        <table>
+          <thead><tr><th>渠道 ID</th><th>名称</th></tr></thead>
+          <tbody>
+            <tr v-for="c in boundDlg.channels" :key="c.id">
+              <td>{{ c.id }}</td>
+              <td>{{ c.name }}</td>
+            </tr>
+            <tr v-if="!boundDlg.channels.length"><td colspan="2" class="empty">未绑定任何渠道</td></tr>
+          </tbody>
+        </table>
+        <div class="actions"><button @click="boundDlg=null">关闭</button></div>
       </div>
     </div>
 

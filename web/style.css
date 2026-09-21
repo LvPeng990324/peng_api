@@ -127,6 +127,8 @@ tbody tr:hover td { background: rgba(148, 163, 184, .04); }
 .ops a { color: var(--primary); cursor: pointer; margin-right: 10px; white-space: nowrap; }
 .ops a:hover { text-decoration: underline; }
 .ops a.danger, a.danger { color: var(--red-fg); cursor: pointer; }
+.td-link { color: var(--primary); cursor: pointer; }
+.td-link:hover { text-decoration: underline; }
 
 /* ============ 标签 / 状态色 ============ */
 .tag { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 500; white-space: nowrap; }
