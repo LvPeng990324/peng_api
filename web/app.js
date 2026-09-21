@@ -24,6 +24,7 @@ createApp({
       loginErr: '',
       err: '',
       tab: 'channels',
+      sidebarOpen: false,
       tabs: [
         { key: 'channels', label: '渠道' },
         { key: 'models', label: '模型与别名' },
@@ -45,6 +46,10 @@ createApp({
     };
   },
   computed: {
+    tabLabel() {
+      const t = this.tabs.find(x => x.key === this.tab);
+      return t ? t.label : '';
+    },
     testModelOptions() {
       if (!this.chForm) return [];
       return this.chForm.models
@@ -89,6 +94,7 @@ createApp({
     },
     switchTab(k) {
       this.tab = k;
+      this.sidebarOpen = false;
       if (k === 'logs') this.loadLogs();
     },
     async loadAll() {
