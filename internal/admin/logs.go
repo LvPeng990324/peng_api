@@ -3,6 +3,7 @@ package admin
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"pengapi/internal/store"
 
@@ -25,6 +26,16 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("channel_id"); v != "" {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			f.ChannelID = &id
+		}
+	}
+	if v := q.Get("start_time"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.StartTime = &t
+		}
+	}
+	if v := q.Get("end_time"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			f.EndTime = &t
 		}
 	}
 	logs, total, err := h.store.ListLogs(r.Context(), f)

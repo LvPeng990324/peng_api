@@ -54,6 +54,8 @@ type LogFilter struct {
 	Status    string
 	TokenID   *int64
 	ChannelID *int64
+	StartTime *time.Time
+	EndTime   *time.Time
 	Page      int
 	Size      int
 }
@@ -77,6 +79,14 @@ func (f LogFilter) where() (string, []any) {
 	if f.ChannelID != nil {
 		conds = append(conds, "channel_id = ?")
 		args = append(args, *f.ChannelID)
+	}
+	if f.StartTime != nil {
+		conds = append(conds, "created_at >= ?")
+		args = append(args, *f.StartTime)
+	}
+	if f.EndTime != nil {
+		conds = append(conds, "created_at <= ?")
+		args = append(args, *f.EndTime)
 	}
 	if len(conds) == 0 {
 		return "", nil

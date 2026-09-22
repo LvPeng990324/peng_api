@@ -59,8 +59,6 @@
         </button>
         <h2>{{ tabLabel }}</h2>
       </header>
-      <p class="err global-err" v-if="err">{{ err }}</p>
-      <p class="notice global-err" v-if="notice">{{ notice }}</p>
 
     <!-- ============ 渠道 ============ -->
     <section v-if="tab==='channels'">
@@ -175,6 +173,8 @@
             <option value="">全部渠道</option>
             <option v-for="c in channels" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
           </select>
+          <input type="datetime-local" v-model="logFilter.start_time" placeholder="开始时间">
+          <input type="datetime-local" v-model="logFilter.end_time" placeholder="结束时间">
           <button class="primary" @click="searchLogs">查询</button>
         </div>
       </div>
@@ -201,7 +201,7 @@
       </div>
       <div class="pager">
         <button :disabled="logs.page<=1" @click="pageLogs(-1)">上一页</button>
-        <span>第 {{ logs.page }} 页 / 共 {{ logs.total }} 条</span>
+        <span>第 {{ logs.page }} 页 / 共 {{ logPages }} 页 / 共 {{ logs.total }} 条</span>
         <button :disabled="logs.page>=logPages" @click="pageLogs(1)">下一页</button>
       </div>
     </section>
@@ -419,6 +419,16 @@
         <div class="actions"><button @click="logDetail=null">关闭</button></div>
       </div>
     </div>
+    </div>
+  </div>
+
+  <!-- 全局 Toast 提示（层级最高，手动关闭） -->
+  <div class="toast-container">
+    <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">
+      <span class="toast-msg">{{ t.msg }}</span>
+      <button class="toast-close" @click="closeToast(t.id)" aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
     </div>
   </div>
 </div>

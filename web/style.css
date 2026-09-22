@@ -103,8 +103,54 @@ body {
 .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
 
 .err { color: var(--red-fg); }
-.global-err { margin: 12px 24px 0; padding: 10px 14px; background: var(--red-bg); border-radius: 8px; }
-.global-err.notice { background: var(--green-bg); color: var(--green-fg); }
+
+/* ============ Toast 提示（层级最高） ============ */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 380px;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .45);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  animation: toast-in .18s ease;
+}
+.toast.error { border-left: 3px solid var(--red-fg); }
+.toast.success { border-left: 3px solid var(--green-fg); }
+.toast-msg { flex: 1; word-break: break-all; }
+.toast-close {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.toast-close:hover { background: var(--bg-hover); color: var(--text); }
+.toast-close svg { width: 16px; height: 16px; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
 
 section { padding: 20px 24px; }
 .bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px; }
@@ -241,8 +287,9 @@ pre {
   .icon-btn { display: inline-flex; }
   .topbar { padding: 12px 16px; }
   section { padding: 16px; }
-  .global-err { margin: 10px 16px 0; }
   .modal, .modal.wide { width: 100%; max-height: 92vh; }
   .mask { padding: 12px; align-items: flex-start; }
   table { min-width: 560px; }
+  .toast-container { left: 12px; right: 12px; max-width: none; }
+  .filters input[type="datetime-local"] { width: 100%; }
 }

@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -71,10 +73,29 @@ func (s *Store) replaceBindings(ctx context.Context, channelID int64, models []C
 		if _, err := s.db.ExecContext(ctx,
 			`INSERT INTO channel_models (channel_id, model_id, upstream_model) VALUES (?, ?, ?)`,
 			channelID, b.ModelID, b.UpstreamModel); err != nil {
+			if isUniqueConstraintErr(err) {
+				name := s.modelNameByID(ctx, b.ModelID)
+				return fmt.Errorf("模型「%s」在此渠道下已绑定到其他上游模型，请先解绑后再绑定", name)
+			}
 			return err
 		}
 	}
 	return nil
+}
+
+func isUniqueConstraintErr(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "constraint failed")
+}
+
+func (s *Store) modelNameByID(ctx context.Context, id int64) string {
+	var name string
+	_ = s.db.QueryRowContext(ctx, `SELECT name FROM models WHERE id=?`, id).Scan(&name)
+	if name == "" {
+		name = fmt.Sprintf("#%d", id)
+	}
+	return name
 }
 
 func (s *Store) DeleteChannel(ctx context.Context, id int64) error {

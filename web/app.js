@@ -24,6 +24,7 @@ createApp({
       loginErr: '',
       err: '',
       notice: '',
+      toasts: [],
       tab: 'channels',
       sidebarOpen: false,
       tabs: [
@@ -36,7 +37,7 @@ createApp({
       models: [],
       tokens: [],
       logs: { data: [], total: 0, page: 1, size: 20 },
-      logFilter: { model: '', status: '', token_id: '', channel_id: '' },
+      logFilter: { model: '', status: '', token_id: '', channel_id: '', start_time: '', end_time: '' },
       chForm: null,
       boundDlg: null,
       chModelsDlg: null,
@@ -99,13 +100,21 @@ createApp({
     },
   },
   methods: {
+    // ---- 全局提示（Toast） ----
+    toast(msg, type = 'error') {
+      const id = Date.now() + Math.random();
+      this.toasts.push({ id, msg, type });
+    },
+    closeToast(id) {
+      this.toasts = this.toasts.filter(t => t.id !== id);
+    },
+
     async guard(fn) {
       try {
         await fn();
       } catch (e) {
         if (e.status === 401) { this.authed = false; return; }
-        this.err = e.message;
-        setTimeout(() => { this.err = ''; }, 5000);
+        this.toast(e.message, 'error');
       }
     },
     async login() {
@@ -170,6 +179,8 @@ createApp({
         if (this.logFilter.status) q.set('status', this.logFilter.status);
         if (this.logFilter.token_id) q.set('token_id', this.logFilter.token_id);
         if (this.logFilter.channel_id) q.set('channel_id', this.logFilter.channel_id);
+        if (this.logFilter.start_time) q.set('start_time', new Date(this.logFilter.start_time).toISOString());
+        if (this.logFilter.end_time) q.set('end_time', new Date(this.logFilter.end_time).toISOString());
         const v = await api('/logs?' + q);
         this.logs.data = v.data || [];
         this.logs.total = v.total;
@@ -348,14 +359,13 @@ createApp({
         await this.copyText(v.token);
       });
     },
-    async copyText(text) {      try {
+    async copyText(text) {
+      try {
         await navigator.clipboard.writeText(text);
-        this.notice = '已复制到剪贴板';
+        this.toast('已复制到剪贴板', 'success');
       } catch (e) {
-        this.notice = '复制失败：' + e.message;
+        this.toast('复制失败：' + e.message, 'error');
       }
-      clearTimeout(this._noticeTimer);
-      this._noticeTimer = setTimeout(() => { this.notice = ''; }, 2000);
     },
 
     // ---- 日志 ----
