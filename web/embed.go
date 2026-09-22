@@ -7,7 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-//go:embed index.html app.js style.css vendor
+//go:embed index.html app.js style.css favicon.svg vendor
 var content embed.FS
 
 var indexHTML, _ = content.ReadFile("index.html")
@@ -20,5 +20,6 @@ func RegisterRoutes(r chi.Router) {
 	})
 	r.Get("/app.js", assets.ServeHTTP)
 	r.Get("/style.css", assets.ServeHTTP)
+	r.Get("/favicon.svg", assets.ServeHTTP)
 	r.Get("/vendor/*", assets.ServeHTTP)
 }

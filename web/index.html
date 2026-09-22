@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>peng_api 管理</title>
+<title>PengAPI 管理</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -13,7 +14,7 @@
     <div class="card login-card">
       <div class="logo">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
-        <h2>peng_api</h2>
+        <h2>PengAPI</h2>
       </div>
       <input type="password" v-model="password" placeholder="管理密码" @keyup.enter="login" autofocus>
       <button class="primary block" @click="login">登录</button>
@@ -26,7 +27,7 @@
     <aside class="sidebar" :class="{open: sidebarOpen}">
       <div class="brand">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
-        <span>peng_api</span>
+        <span>PengAPI</span>
       </div>
       <nav>
         <a class="nav-item" :class="{on: tab==='channels'}" @click="switchTab('channels')">
