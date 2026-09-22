@@ -21,8 +21,8 @@ type LogEntry struct {
 	Status           string    `json:"status"`
 	HTTPStatus       *int      `json:"http_status"`
 	Error            string    `json:"error"`
-	RequestBody      string    `json:"request_body"`
-	ResponseBody     string    `json:"response_body"`
+	RequestBody      string    `json:"request_body,omitempty"`
+	ResponseBody     string    `json:"response_body,omitempty"`
 	PromptTokens         *int      `json:"prompt_tokens"`
 	CompletionTokens     *int      `json:"completion_tokens"`
 	PromptCacheHitTokens *int      `json:"prompt_cache_hit_tokens"`
@@ -98,7 +98,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 		return nil, 0, err
 	}
 	q := `SELECT id, request_id, attempt, token_id, token_name, model_requested, model_canonical,
-		channel_id, channel_name, stream, status, http_status, error, request_body, response_body,
+		channel_id, channel_name, stream, status, http_status, error,
 		prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at
 		FROM request_logs` + where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, q, append(args, f.Size, (f.Page-1)*f.Size)...)
@@ -108,7 +108,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 	defer rows.Close()
 	out := []LogEntry{}
 	for rows.Next() {
-		e, err := scanLog(rows)
+		e, err := scanLogList(rows)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -161,6 +161,43 @@ func (s *Store) DeleteLogsBefore(ctx context.Context, cutoff time.Time) (int64, 
 
 type logScanner interface {
 	Scan(dest ...any) error
+}
+
+// scanLogList 列表查询专用：不含 request_body / response_body
+func scanLogList(row logScanner) (*LogEntry, error) {
+	var e LogEntry
+	var tokenID, channelID sql.NullInt64
+	var httpStatus, promptTokens, completionTokens, cacheHit sql.NullInt64
+	err := row.Scan(&e.ID, &e.RequestID, &e.Attempt, &tokenID, &e.TokenName,
+		&e.ModelRequested, &e.ModelCanonical, &channelID, &e.ChannelName, &e.Stream,
+		&e.Status, &httpStatus, &e.Error,
+		&promptTokens, &completionTokens, &cacheHit, &e.LatencyMS, &e.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if tokenID.Valid {
+		e.TokenID = &tokenID.Int64
+	}
+	if channelID.Valid {
+		e.ChannelID = &channelID.Int64
+	}
+	if httpStatus.Valid {
+		v := int(httpStatus.Int64)
+		e.HTTPStatus = &v
+	}
+	if promptTokens.Valid {
+		v := int(promptTokens.Int64)
+		e.PromptTokens = &v
+	}
+	if completionTokens.Valid {
+		v := int(completionTokens.Int64)
+		e.CompletionTokens = &v
+	}
+	if cacheHit.Valid {
+		v := int(cacheHit.Int64)
+		e.PromptCacheHitTokens = &v
+	}
+	return &e, nil
 }
 
 func scanLog(row logScanner) (*LogEntry, error) {

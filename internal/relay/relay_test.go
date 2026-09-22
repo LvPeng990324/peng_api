@@ -416,8 +416,12 @@ func TestEngineStreamPassthroughAndLog(t *testing.T) {
 	if total != 1 || !logs[0].Stream || logs[0].Status != "success" {
 		t.Fatalf("stream log: %+v", logs)
 	}
-	if !strings.Contains(logs[0].ResponseBody, "[DONE]") {
-		t.Errorf("assembled SSE body missing: %q", logs[0].ResponseBody)
+	detail, err := env.st.GetLog(context.Background(), logs[0].ID)
+	if err != nil || detail == nil {
+		t.Fatalf("GetLog: %v", err)
+	}
+	if !strings.Contains(detail.ResponseBody, "[DONE]") {
+		t.Errorf("assembled SSE body missing: %q", detail.ResponseBody)
 	}
 }
 
@@ -471,8 +475,15 @@ func TestFinishStreamUpstreamInterrupt(t *testing.T) {
 		t.Errorf("partial content must reach client: %q", rec.Body.String())
 	}
 	logs, total, _ := st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
-	if total != 1 || logs[0].ResponseBody != "data: partial\n\n" {
-		t.Errorf("partial body must be logged: %+v", logs)
+	if total != 1 {
+		t.Fatalf("expected 1 log, got %d", total)
+	}
+	detail, err := st.GetLog(context.Background(), logs[0].ID)
+	if err != nil || detail == nil {
+		t.Fatalf("GetLog: %v", err)
+	}
+	if detail.ResponseBody != "data: partial\n\n" {
+		t.Errorf("partial body must be logged: %+v", detail)
 	}
 	got, _ := st.GetChannel(context.Background(), ch.ID)
 	if got.ConsecutiveFailures != 1 {
