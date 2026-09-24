@@ -86,7 +86,7 @@ func main() {
 	providers := provider.NewRegistry(
 		provider.NewOpenAI(upstreamClient, cfg.RequestTimeout, cfg.StreamFirstByteTimeout),
 	)
-	engine := relay.NewEngine(st, providers, cfg.FailThreshold)
+	engine := relay.NewEngine(st, providers)
 	sessions := auth.NewSessionStore(7 * 24 * time.Hour)
 	adminH := admin.New(st, sessions, cfg.AdminPassword, providers)
 

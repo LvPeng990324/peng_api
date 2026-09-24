@@ -9,9 +9,9 @@ import (
 	"pengapi/internal/store"
 )
 
-// 透传上游 SSE 到客户端，累积全文；结束后落日志/计数
-// 客户端断开不计渠道失败；上游中途断流计失败但不降级（已写出响应头）
-func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntry, channelID int64) {
+// 透传上游 SSE 到客户端，累积全文；结束后落日志。
+// 写出响应头后无法降级：客户端断开/上游断流都只影响日志，不再尝试下一模型。
+func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntry) {
 	defer src.Close()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -32,7 +32,7 @@ func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *s
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			if _, werr := w.Write(line); werr != nil {
-				// 客户端断开：不惩罚渠道
+				// 客户端断开：只记日志
 				entry.Status = "failed"
 				entry.Error = "client disconnected: " + werr.Error()
 				entry.ResponseBody = acc.String()
@@ -48,14 +48,12 @@ func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *s
 				entry.ResponseBody = acc.String()
 				entry.PromptTokens, entry.CompletionTokens, entry.PromptCacheHitTokens = parseUsageSSE(acc.String())
 				e.insertLog(entry)
-				e.recordSuccess(channelID)
 			} else {
-				// 上游中途断流：已写出响应头，无法降级；计渠道失败
+				// 上游中途断流：已写出响应头，无法降级
 				entry.Status = "failed"
 				entry.Error = "stream interrupted: " + err.Error()
 				entry.ResponseBody = acc.String()
 				e.insertLog(entry)
-				e.recordFailure(channelID)
 			}
 			return
 		}

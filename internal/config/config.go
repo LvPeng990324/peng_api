@@ -14,7 +14,6 @@ type Config struct {
 	DBPath                 string
 	AdminPassword          string
 	LogRetentionDays       int
-	FailThreshold          int
 	RequestTimeout         time.Duration
 	ConnectTimeout         time.Duration
 	StreamFirstByteTimeout time.Duration
@@ -31,7 +30,6 @@ func Parse(args []string) (Config, error) {
 		dbPath      = fs.String("db", "", "sqlite file path (or PENG_DB, default ./peng.db)")
 		password    = fs.String("admin-password", "", "admin password (or PENG_ADMIN_PASSWORD)")
 		retention   = fs.Int("log-retention-days", 0, "days to keep request logs (or PENG_LOG_RETENTION_DAYS, default 30)")
-		threshold   = fs.Int("fail-threshold", 0, "consecutive failures before auto-disable (or PENG_FAIL_THRESHOLD, default 3)")
 		reqTimeout  = fs.Int("request-timeout", 0, "non-stream upstream timeout in seconds (or PENG_REQUEST_TIMEOUT, default 300)")
 		connTimeout = fs.Int("connect-timeout", 0, "upstream connect timeout in seconds (or PENG_CONNECT_TIMEOUT, default 10)")
 		firstByte   = fs.Int("stream-first-byte-timeout", 0, "stream first-byte timeout in seconds (or PENG_STREAM_FIRST_BYTE_TIMEOUT, default 60)")
@@ -44,7 +42,6 @@ func Parse(args []string) (Config, error) {
 		DBPath:                 envOr("PENG_DB", "./peng.db"),
 		AdminPassword:          envOr("PENG_ADMIN_PASSWORD", ""),
 		LogRetentionDays:       envOrInt("PENG_LOG_RETENTION_DAYS", 30),
-		FailThreshold:          envOrInt("PENG_FAIL_THRESHOLD", 3),
 		RequestTimeout:         time.Duration(envOrInt("PENG_REQUEST_TIMEOUT", 300)) * time.Second,
 		ConnectTimeout:         time.Duration(envOrInt("PENG_CONNECT_TIMEOUT", 10)) * time.Second,
 		StreamFirstByteTimeout: time.Duration(envOrInt("PENG_STREAM_FIRST_BYTE_TIMEOUT", 60)) * time.Second,
@@ -60,9 +57,6 @@ func Parse(args []string) (Config, error) {
 	}
 	if *retention != 0 {
 		cfg.LogRetentionDays = *retention
-	}
-	if *threshold != 0 {
-		cfg.FailThreshold = *threshold
 	}
 	if *reqTimeout != 0 {
 		cfg.RequestTimeout = time.Duration(*reqTimeout) * time.Second

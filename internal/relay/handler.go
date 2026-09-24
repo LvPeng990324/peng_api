@@ -11,13 +11,12 @@ import (
 )
 
 type Engine struct {
-	store         *store.Store
-	providers     *provider.Registry
-	failThreshold int
+	store     *store.Store
+	providers *provider.Registry
 }
 
-func NewEngine(st *store.Store, reg *provider.Registry, failThreshold int) *Engine {
-	return &Engine{store: st, providers: reg, failThreshold: failThreshold}
+func NewEngine(st *store.Store, reg *provider.Registry) *Engine {
+	return &Engine{store: st, providers: reg}
 }
 
 func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -35,35 +34,36 @@ func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid request: model is required")
 		return
 	}
-	model, err := e.store.ResolveModel(r.Context(), meta.Model)
+	// 标准名大小写敏感精确匹配
+	mapping, err := e.store.ResolveMapping(r.Context(), meta.Model)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if model == nil {
+	if mapping == nil {
 		writeOpenAIError(w, http.StatusNotFound, "model not found: "+meta.Model)
 		return
 	}
-	candidates, err := e.store.SelectChannels(r.Context(), model.ID)
+	candidates, err := e.store.SelectModels(r.Context(), mapping.ID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if len(candidates) == 0 {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "no available channel for model: "+model.Name)
+		writeOpenAIError(w, http.StatusServiceUnavailable, "no available model: "+mapping.Name)
 		return
 	}
-	e.run(w, r, tok, model, candidates, body, meta.Stream)
+	e.run(w, r, tok, mapping, candidates, body, meta.Stream)
 }
 
 func (e *Engine) Models(w http.ResponseWriter, r *http.Request) {
-	models, err := e.store.ListModelsWithEnabledChannels(r.Context())
+	mappings, err := e.store.ListMappingsWithEnabledModels(r.Context())
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	data := make([]map[string]any, 0, len(models))
-	for _, m := range models {
+	data := make([]map[string]any, 0, len(mappings))
+	for _, m := range mappings {
 		item := map[string]any{
 			"id": m.Name, "object": "model", "created": m.CreatedAt.Unix(), "owned_by": "peng-api",
 		}

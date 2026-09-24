@@ -9,10 +9,8 @@ import (
 )
 
 type modelInput struct {
-	Name            string   `json:"name"`
-	Aliases         []string `json:"aliases"`
-	ContextLength   *int64   `json:"context_length"`
-	MaxOutputTokens *int64   `json:"max_output_tokens"`
+	ChannelID int64  `json:"channel_id"`
+	Name      string `json:"name"`
 }
 
 func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
@@ -24,20 +22,25 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": models})
 }
 
+// createModel 创建模型实体；同渠道重名时幂等返回已存在实体
 func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	var in modelInput
 	if !decodeJSON(w, r, &in) {
 		return
 	}
 	in.Name = strings.TrimSpace(in.Name)
+	if in.ChannelID == 0 {
+		writeErr(w, http.StatusBadRequest, "channel_id is required")
+		return
+	}
 	if in.Name == "" {
 		writeErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	m, err := h.store.CreateModel(r.Context(), in.Name, in.Aliases, in.ContextLength, in.MaxOutputTokens)
+	m, err := h.store.CreateModel(r.Context(), in.ChannelID, in.Name)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			writeErr(w, http.StatusBadRequest, "name or alias already exists")
+		if strings.Contains(err.Error(), "FOREIGN KEY") {
+			writeErr(w, http.StatusBadRequest, "channel not found")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "internal error")
@@ -46,6 +49,7 @@ func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, m)
 }
 
+// updateModel 模型实体改名
 func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
@@ -60,9 +64,9 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if err := h.store.UpdateModel(r.Context(), id, in.Name, in.Aliases, in.ContextLength, in.MaxOutputTokens); err != nil {
+	if err := h.store.UpdateModel(r.Context(), id, strings.TrimSpace(in.Name)); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			writeErr(w, http.StatusBadRequest, "name or alias already exists")
+			writeErr(w, http.StatusBadRequest, "name already exists in this channel")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "internal error")

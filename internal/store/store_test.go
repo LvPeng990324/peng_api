@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +21,7 @@ func openTest(t *testing.T) *Store {
 
 func TestOpenCreatesTables(t *testing.T) {
 	s := openTest(t)
-	for _, table := range []string{"models", "model_aliases", "channels", "channel_models", "tokens", "request_logs"} {
+	for _, table := range []string{"channels", "models", "model_mappings", "model_mapping_models", "tokens", "request_logs"} {
 		var name string
 		err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
 		if err != nil {
@@ -42,6 +44,102 @@ func TestOpenIdempotent(t *testing.T) {
 		t.Fatalf("Open 2: %v", err)
 	}
 	s2.Close()
+}
+
+// 旧库（渠道↔标准模型↔别名结构）打开后四张表 DROP 重建，tokens/request_logs 保留
+func TestOpenDropsLegacySchema(t *testing.T) {
+	path := t.TempDir() + "/legacy.db"
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := `
+	CREATE TABLE models (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+	  context_length INTEGER, max_output_tokens INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+	CREATE TABLE model_aliases (id INTEGER PRIMARY KEY AUTOINCREMENT, alias TEXT NOT NULL UNIQUE,
+	  model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE);
+	CREATE TABLE channels (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+	  type TEXT NOT NULL DEFAULT 'openai', base_url TEXT NOT NULL, api_key TEXT NOT NULL,
+	  priority INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
+	  test_model TEXT NOT NULL DEFAULT '', auto_disabled INTEGER NOT NULL DEFAULT 0,
+	  consecutive_failures INTEGER NOT NULL DEFAULT 0, disabled_until DATETIME,
+	  created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+	CREATE TABLE channel_models (channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+	  model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+	  upstream_model TEXT NOT NULL DEFAULT '', PRIMARY KEY (channel_id, model_id));
+	CREATE TABLE tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+	  token TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 1,
+	  created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+	CREATE TABLE request_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL,
+	  attempt INTEGER NOT NULL, token_id INTEGER, token_name TEXT NOT NULL DEFAULT '',
+	  model_requested TEXT NOT NULL, model_canonical TEXT NOT NULL DEFAULT '',
+	  channel_id INTEGER, channel_name TEXT NOT NULL DEFAULT '', stream INTEGER NOT NULL DEFAULT 0,
+	  status TEXT NOT NULL, http_status INTEGER, error TEXT NOT NULL DEFAULT '',
+	  request_body TEXT NOT NULL DEFAULT '', response_body TEXT NOT NULL DEFAULT '',
+	  prompt_tokens INTEGER, completion_tokens INTEGER, latency_ms INTEGER NOT NULL DEFAULT 0,
+	  created_at DATETIME DEFAULT CURRENT_TIMESTAMP);`
+	if _, err := db.Exec(legacy); err != nil {
+		t.Fatalf("legacy ddl: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO channels (name, base_url, api_key) VALUES ('old', 'http://x', 'k')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO models (name) VALUES ('glm-5.3')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO model_aliases (alias, model_id) VALUES ('GLM5.3', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO channel_models (channel_id, model_id, upstream_model) VALUES (1, 1, 'glm-free')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO tokens (name, token) VALUES ('keepme', 'sk-keep')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO request_logs (request_id, attempt, model_requested, status) VALUES ('r1', 1, 'glm-5.3', 'success')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open legacy: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// legacy 表已删，新结构就位
+	if exists, _ := hasTable(s.db, "model_aliases"); exists {
+		t.Error("model_aliases must be dropped")
+	}
+	if exists, _ := hasTable(s.db, "channel_models"); exists {
+		t.Error("channel_models must be dropped")
+	}
+	channels, err := s.ListChannels(ctx)
+	if err != nil || len(channels) != 0 {
+		t.Fatalf("channels must be rebuilt empty: %v %+v", err, channels)
+	}
+	models, err := s.ListModels(ctx)
+	if err != nil || len(models) != 0 {
+		t.Fatalf("models must be rebuilt empty: %v %+v", err, models)
+	}
+	// tokens / request_logs 保留
+	toks, err := s.ListTokens(ctx)
+	if err != nil || len(toks) != 1 || toks[0].Name != "keepme" {
+		t.Fatalf("tokens must survive: %v %+v", err, toks)
+	}
+	logs, total, err := s.ListLogs(ctx, LogFilter{Page: 1, Size: 10})
+	if err != nil || total != 1 || logs[0].RequestID != "r1" {
+		t.Fatalf("request_logs must survive: %v total=%d", err, total)
+	}
+	// 重建后能正常走新流程
+	ch, err := s.CreateChannel(ctx, Channel{Name: "new", Type: "openai", BaseURL: "http://y", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("CreateChannel after migration: %v", err)
+	}
+	if _, err := s.CreateModel(ctx, ch.ID, "glm-5.3"); err != nil {
+		t.Fatalf("CreateModel after migration: %v", err)
+	}
 }
 
 func TestTokenCRUD(t *testing.T) {
@@ -100,118 +198,13 @@ func TestTokenValueUnique(t *testing.T) {
 	}
 }
 
-func ptrI64(v int64) *int64 { return &v }
-
-func TestModelCRUDAndResolve(t *testing.T) {
-	s := openTest(t)
-	ctx := context.Background()
-
-	m, err := s.CreateModel(ctx, "glm-5.3", []string{"GLM-5.3", "glm5.3"}, ptrI64(131072), ptrI64(8192))
-	if err != nil {
-		t.Fatalf("CreateModel: %v", err)
-	}
-
-	// 标准名命中（大小写不敏感）
-	got, err := s.ResolveModel(ctx, "GLM-5.3")
-	if err != nil || got == nil || got.ID != m.ID {
-		t.Fatalf("resolve by alias failed: %v %+v", err, got)
-	}
-	// 别名命中
-	got, err = s.ResolveModel(ctx, "Glm5.3")
-	if err != nil || got == nil || got.ID != m.ID {
-		t.Fatalf("resolve by alias case-insensitive failed: %v %+v", err, got)
-	}
-	// 标准名本身也要命中
-	got, err = s.ResolveModel(ctx, "gLM-5.3")
-	if err != nil || got == nil || got.ID != m.ID {
-		t.Fatalf("resolve by canonical name failed: %v %+v", err, got)
-	}
-	// 未命中
-	got, err = s.ResolveModel(ctx, "no-such-model")
-	if err != nil || got != nil {
-		t.Fatalf("expected nil for unknown model: %v %+v", err, got)
-	}
-
-	// 列表含别名
-	list, err := s.ListModels(ctx)
-	if err != nil || len(list) != 1 {
-		t.Fatalf("ListModels: %v", err)
-	}
-	if len(list[0].Aliases) != 2 || list[0].ContextLength == nil || *list[0].ContextLength != 131072 {
-		t.Errorf("unexpected model: %+v", list[0])
-	}
-
-	// 整体替换别名
-	if err := s.UpdateModel(ctx, m.ID, "glm-5.3", []string{"glm53"}, nil, nil); err != nil {
-		t.Fatalf("UpdateModel: %v", err)
-	}
-	got, _ = s.ResolveModel(ctx, "glm5.3")
-	if got != nil {
-		t.Error("old alias should be gone after replace")
-	}
-	got, _ = s.ResolveModel(ctx, "GLM53")
-	if got == nil {
-		t.Error("new alias should resolve")
-	}
-
-	if err := s.DeleteModel(ctx, m.ID); err != nil {
-		t.Fatalf("DeleteModel: %v", err)
-	}
-	got, _ = s.ResolveModel(ctx, "glm53")
-	if got != nil {
-		t.Error("alias should cascade-delete with model")
-	}
-}
-
-func TestAliasUniqueAcrossModels(t *testing.T) {
-	s := openTest(t)
-	ctx := context.Background()
-	if _, err := s.CreateModel(ctx, "a-model", []string{"shared"}, nil, nil); err != nil {
-		t.Fatalf("CreateModel: %v", err)
-	}
-	if _, err := s.CreateModel(ctx, "b-model", []string{"shared"}, nil, nil); err == nil {
-		t.Fatal("duplicate alias must fail (UNIQUE constraint)")
-	}
-}
-
-func TestListModelsWithEnabledChannels(t *testing.T) {
-	s := openTest(t)
-	ctx := context.Background()
-	withCh, _ := s.CreateModel(ctx, "has-channel", nil, nil, nil)
-	without, _ := s.CreateModel(ctx, "no-channel", nil, nil, nil)
-
-	ch, err := s.CreateChannel(ctx, Channel{Name: "c1", Type: "openai", BaseURL: "http://x", APIKey: "k"})
-	if err != nil {
-		t.Fatalf("CreateChannel: %v", err)
-	}
-	if err := s.BindModels(ctx, ch.ID, []BindingInput{{UpstreamModel: "has-channel", ModelID: &withCh.ID}}); err != nil {
-		t.Fatalf("BindModels: %v", err)
-	}
-
-	list, err := s.ListModelsWithEnabledChannels(ctx)
-	if err != nil || len(list) != 1 || list[0].Name != "has-channel" {
-		t.Fatalf("ListModelsWithEnabledChannels: %v %+v", err, list)
-	}
-
-	// 渠道禁用后模型不再出现
-	if err := s.SetChannelEnabled(ctx, ch.ID, false); err != nil {
-		t.Fatalf("SetChannelEnabled: %v", err)
-	}
-	list, _ = s.ListModelsWithEnabledChannels(ctx)
-	if len(list) != 0 {
-		t.Fatalf("expected empty, got %+v (model %d should be hidden)", list, without.ID)
-	}
-}
-
 func TestChannelCRUD(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	m, _ := s.CreateModel(ctx, "glm-5.3", nil, nil, nil)
 
 	ch, err := s.CreateChannel(ctx, Channel{
 		Name: "zhipu", Type: "openai", BaseURL: "https://api.bigmodel.cn/coding/paas/v4",
 		APIKey: "key1", Priority: 10, TestModel: "glm-5.3-free",
-		Models: []ChannelModelBinding{{ModelID: m.ID, UpstreamModel: "glm-5.3-free"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
@@ -221,160 +214,278 @@ func TestChannelCRUD(t *testing.T) {
 	if err != nil || got == nil {
 		t.Fatalf("GetChannel: %v", err)
 	}
-	if got.Name != "zhipu" || got.Priority != 10 || !got.Enabled || got.AutoDisabled {
+	if got.Name != "zhipu" || got.Priority != 10 || !got.Enabled || got.TestModel != "glm-5.3-free" {
 		t.Errorf("unexpected channel: %+v", got)
 	}
-	if len(got.Models) != 1 || got.Models[0].UpstreamModel != "glm-5.3-free" || got.Models[0].ModelName != "glm-5.3" {
-		t.Errorf("unexpected bindings: %+v", got.Models)
-	}
 
-	// 整体更新：换绑定，失败状态保留
-	s.RecordFailure(ctx, ch.ID, 3)
-	got2, _ := s.GetChannel(ctx, ch.ID)
-	if got2.ConsecutiveFailures != 1 {
-		t.Errorf("RecordFailure should have incremented: %+v", got2)
-	}
 	if err := s.UpdateChannel(ctx, Channel{
 		ID: ch.ID, Name: "zhipu2", Type: "openai", BaseURL: got.BaseURL, APIKey: "key2",
 		Priority: 5, Enabled: true, TestModel: "m2",
-		Models: []ChannelModelBinding{{ModelID: m.ID, UpstreamModel: "m2"}},
 	}); err != nil {
 		t.Fatalf("UpdateChannel: %v", err)
 	}
 	got3, _ := s.GetChannel(ctx, ch.ID)
-	if got3.Name != "zhipu2" || got3.APIKey != "key2" || got3.ConsecutiveFailures != 1 {
-		t.Errorf("update lost state or fields: %+v", got3)
+	if got3.Name != "zhipu2" || got3.APIKey != "key2" || got3.Priority != 5 {
+		t.Errorf("update lost fields: %+v", got3)
 	}
-	if len(got3.Models) != 1 || got3.Models[0].UpstreamModel != "m2" {
-		t.Errorf("bindings not replaced: %+v", got3.Models)
+
+	// 渠道禁用只改 enabled（不再有健康状态列）
+	if err := s.SetChannelEnabled(ctx, ch.ID, false); err != nil {
+		t.Fatalf("SetChannelEnabled: %v", err)
+	}
+	got4, _ := s.GetChannel(ctx, ch.ID)
+	if got4.Enabled {
+		t.Error("channel should be disabled")
 	}
 
 	if err := s.DeleteChannel(ctx, ch.ID); err != nil {
 		t.Fatalf("DeleteChannel: %v", err)
 	}
-	got4, _ := s.GetChannel(ctx, ch.ID)
-	if got4 != nil {
+	got5, _ := s.GetChannel(ctx, ch.ID)
+	if got5 != nil {
 		t.Error("channel should be deleted")
 	}
 }
 
-func TestSelectChannelsOrderAndLazyRecovery(t *testing.T) {
+func TestChannelDeleteCascadesModels(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
-	m, _ := s.CreateModel(ctx, "glm-5.3", nil, nil, nil)
+	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
+	m, _ := s.CreateModel(ctx, ch.ID, "glm-5.3")
+	mp, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID})
+
+	if err := s.DeleteChannel(ctx, ch.ID); err != nil {
+		t.Fatalf("DeleteChannel: %v", err)
+	}
+	got, _ := s.GetModel(ctx, m.ID)
+	if got != nil {
+		t.Error("channel delete must cascade to its models")
+	}
+	// 绑定随之清空，映射本身还在
+	mp2, _ := s.ResolveMapping(ctx, "glm-5.3")
+	if mp2 == nil || mp2.ID != mp.ID {
+		t.Fatalf("mapping should survive: %+v", mp2)
+	}
+	cands, _ := s.SelectModels(ctx, mp.ID)
+	if len(cands) != 0 {
+		t.Errorf("bindings must be cascade-deleted: %+v", cands)
+	}
+}
+
+func TestModelCRUD(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	ch, _ := s.CreateChannel(ctx, Channel{Name: "zhipu", Type: "openai", BaseURL: "http://x", APIKey: "k"})
+
+	m, err := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
+	if err != nil {
+		t.Fatalf("CreateModel: %v", err)
+	}
+	// 同渠道重名 → 幂等返回已存在实体
+	again, err := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
+	if err != nil || again.ID != m.ID {
+		t.Fatalf("CreateModel must be idempotent per channel: %v %+v", err, again)
+	}
+	// 不同渠道允许同名
+	ch2, _ := s.CreateChannel(ctx, Channel{Name: "other", Type: "openai", BaseURL: "http://y", APIKey: "k"})
+	if _, err := s.CreateModel(ctx, ch2.ID, "glm-5.3-free"); err != nil {
+		t.Fatalf("same name on another channel must be allowed: %v", err)
+	}
+	// 渠道不存在 → FK 错误
+	if _, err := s.CreateModel(ctx, 9999, "m"); err == nil {
+		t.Fatal("model on missing channel must fail (FK)")
+	}
+
+	// 绑定标准名后列表带出渠道名 + 映射名
+	mp, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID})
+	list, err := s.ListModels(ctx)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListModels: %v len=%d", err, len(list))
+	}
+	if list[0].ChannelName != "zhipu" || len(list[0].Mappings) != 1 || list[0].Mappings[0] != "glm-5.3" {
+		t.Errorf("unexpected model row: %+v", list[0])
+	}
+
+	// ModelsOfChannel 只含本渠道
+	ofCh, err := s.ModelsOfChannel(ctx, ch.ID)
+	if err != nil || len(ofCh) != 1 || ofCh[0].ID != m.ID {
+		t.Fatalf("ModelsOfChannel: %v %+v", err, ofCh)
+	}
+
+	got, err := s.GetModel(ctx, m.ID)
+	if err != nil || got == nil || got.Name != "glm-5.3-free" || got.ChannelName != "zhipu" {
+		t.Fatalf("GetModel: %v %+v", err, got)
+	}
+
+	// 改名
+	if err := s.UpdateModel(ctx, m.ID, "glm-5.3"); err != nil {
+		t.Fatalf("UpdateModel: %v", err)
+	}
+	got2, _ := s.GetModel(ctx, m.ID)
+	if got2.Name != "glm-5.3" {
+		t.Errorf("rename failed: %+v", got2)
+	}
+
+	// 删除 → 绑定级联清理
+	if err := s.DeleteModel(ctx, m.ID); err != nil {
+		t.Fatalf("DeleteModel: %v", err)
+	}
+	got3, _ := s.GetModel(ctx, m.ID)
+	if got3 != nil {
+		t.Error("model should be deleted")
+	}
+	bound, _ := s.boundModelsOf(ctx, mp.ID)
+	if len(bound) != 0 {
+		t.Errorf("bindings must cascade: %+v", bound)
+	}
+}
+
+func TestSelectModelsOrderAndDisabledSkip(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
 
 	low, _ := s.CreateChannel(ctx, Channel{Name: "low", Type: "openai", BaseURL: "http://low", APIKey: "k", Priority: 1})
 	high, _ := s.CreateChannel(ctx, Channel{Name: "high", Type: "openai", BaseURL: "http://high", APIKey: "k", Priority: 10})
 	off, _ := s.CreateChannel(ctx, Channel{Name: "off", Type: "openai", BaseURL: "http://off", APIKey: "k", Priority: 100})
-	s.BindModels(ctx, low.ID, []BindingInput{{UpstreamModel: "glm-low", ModelID: &m.ID}})
-	s.BindModels(ctx, high.ID, []BindingInput{{UpstreamModel: "glm-high", ModelID: &m.ID}})
-	s.BindModels(ctx, off.ID, []BindingInput{{UpstreamModel: "glm-off", ModelID: &m.ID}})
+	mLow, _ := s.CreateModel(ctx, low.ID, "glm-low")
+	mHigh1, _ := s.CreateModel(ctx, high.ID, "glm-high-1")
+	mHigh2, _ := s.CreateModel(ctx, high.ID, "glm-high-2")
+	mOff, _ := s.CreateModel(ctx, off.ID, "glm-off")
 	s.SetChannelEnabled(ctx, off.ID, false)
 
-	cands, err := s.SelectChannels(ctx, m.ID)
-	if err != nil || len(cands) != 2 {
-		t.Fatalf("SelectChannels: %v len=%d", err, len(cands))
-	}
-	if cands[0].Channel.Name != "high" || cands[1].Channel.Name != "low" {
-		t.Errorf("priority order wrong: %v, %v", cands[0].Channel.Name, cands[1].Channel.Name)
-	}
-	if cands[0].UpstreamModel != "glm-high" {
-		t.Errorf("upstream model not carried: %+v", cands[0])
+	mp, err := s.CreateMapping(ctx, "glm-5.3", nil, nil,
+		[]int64{mLow.ID, mHigh1.ID, mHigh2.ID, mOff.ID})
+	if err != nil {
+		t.Fatalf("CreateMapping: %v", err)
 	}
 
-	// high 连续失败达阈值 → 自动禁用，选择时跳过
-	for i := 0; i < 3; i++ {
-		if err := s.RecordFailure(ctx, high.ID, 3); err != nil {
-			t.Fatalf("RecordFailure: %v", err)
+	cands, err := s.SelectModels(ctx, mp.ID)
+	if err != nil || len(cands) != 3 {
+		t.Fatalf("SelectModels: %v len=%d", err, len(cands))
+	}
+	// priority DESC → high 在前；同渠道按 model id ASC；禁用渠道剔除
+	want := []string{"glm-high-1", "glm-high-2", "glm-low"}
+	for i, w := range want {
+		if cands[i].ModelName != w {
+			t.Errorf("cand[%d] = %s, want %s", i, cands[i].ModelName, w)
 		}
 	}
-	cands, _ = s.SelectChannels(ctx, m.ID)
-	if len(cands) != 1 || cands[0].Channel.Name != "low" {
-		t.Fatalf("auto-disabled channel must be skipped: %+v", cands)
-	}
-	st, _ := s.GetChannel(ctx, high.ID)
-	if !st.AutoDisabled || st.DisabledUntil == nil {
-		t.Errorf("channel should be auto-disabled with cooldown: %+v", st)
+	if cands[0].Channel.Name != "high" || cands[0].Channel.BaseURL != "http://high" {
+		t.Errorf("channel info not carried: %+v", cands[0].Channel)
 	}
 
-	// 冷却过期 → 惰性恢复
-	past := time.Now().UTC().Add(-time.Minute)
-	s.db.ExecContext(ctx, `UPDATE channels SET disabled_until=? WHERE id=?`, past, high.ID)
-	cands, _ = s.SelectChannels(ctx, m.ID)
-	if len(cands) != 2 {
-		t.Fatalf("expired cooldown should lazily recover: %+v", cands)
-	}
-	st, _ = s.GetChannel(ctx, high.ID)
-	if st.AutoDisabled {
-		t.Error("auto_disabled flag should be cleared")
+	// 未绑定任何模型的映射 → 空
+	empty, _ := s.CreateMapping(ctx, "empty-map", nil, nil, nil)
+	cands, _ = s.SelectModels(ctx, empty.ID)
+	if len(cands) != 0 {
+		t.Errorf("unbound mapping must have no candidates: %+v", cands)
 	}
 }
 
-func TestRecordSuccessResets(t *testing.T) {
+func TestMappingCRUDAndResolve(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
-	s.RecordFailure(ctx, ch.ID, 3)
-	s.RecordFailure(ctx, ch.ID, 3)
-	if err := s.RecordSuccess(ctx, ch.ID); err != nil {
-		t.Fatalf("RecordSuccess: %v", err)
+	m1, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
+	m2, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-pro")
+
+	mp, err := s.CreateMapping(ctx, "glm-5.3", ptrI64(131072), ptrI64(8192), []int64{m1.ID, m2.ID})
+	if err != nil {
+		t.Fatalf("CreateMapping: %v", err)
 	}
-	got, _ := s.GetChannel(ctx, ch.ID)
-	if got.ConsecutiveFailures != 0 || got.AutoDisabled || got.DisabledUntil != nil {
-		t.Errorf("success must reset failure state: %+v", got)
+	if mp.ContextLength == nil || *mp.ContextLength != 131072 || len(mp.BoundModels) != 2 {
+		t.Errorf("unexpected mapping: %+v", mp)
+	}
+	if mp.BoundModels[0].ChannelName != "c" {
+		t.Errorf("bound model should carry channel name: %+v", mp.BoundModels[0])
+	}
+
+	// 重名 → UNIQUE 冲突
+	if _, err := s.CreateMapping(ctx, "glm-5.3", nil, nil, nil); err == nil {
+		t.Fatal("duplicate mapping name must fail")
+	}
+	// 绑定不存在的模型 → FK 错误
+	if _, err := s.CreateMapping(ctx, "bad", nil, nil, []int64{9999}); err == nil {
+		t.Fatal("binding missing model must fail (FK)")
+	}
+
+	// 精确匹配（大小写敏感）
+	got, err := s.ResolveMapping(ctx, "glm-5.3")
+	if err != nil || got == nil || got.ID != mp.ID {
+		t.Fatalf("resolve exact: %v %+v", err, got)
+	}
+	got, err = s.ResolveMapping(ctx, "GLM-5.3")
+	if err != nil || got != nil {
+		t.Fatalf("resolve must be case-sensitive: %v %+v", err, got)
+	}
+	got, err = s.ResolveMapping(ctx, "glm-5.3-free")
+	if err != nil || got != nil {
+		t.Fatalf("model entity name must not resolve as mapping: %v %+v", err, got)
+	}
+
+	// 列表带绑定
+	list, err := s.ListMappings(ctx)
+	if err != nil || len(list) != 1 || len(list[0].BoundModels) != 2 {
+		t.Fatalf("ListMappings: %v %+v", err, list)
+	}
+
+	// 全量更新：改参数 + 整体替换绑定
+	if err := s.UpdateMapping(ctx, mp.ID, "glm-5.3", ptrI64(200000), nil, []int64{m2.ID}); err != nil {
+		t.Fatalf("UpdateMapping: %v", err)
+	}
+	list, _ = s.ListMappings(ctx)
+	if len(list[0].BoundModels) != 1 || list[0].BoundModels[0].ID != m2.ID {
+		t.Errorf("bindings not replaced: %+v", list[0].BoundModels)
+	}
+	if list[0].ContextLength == nil || *list[0].ContextLength != 200000 || list[0].MaxOutputTokens != nil {
+		t.Errorf("params not updated: %+v", list[0])
+	}
+	// 重复的 model_ids 去重
+	if err := s.UpdateMapping(ctx, mp.ID, "glm-5.3", nil, nil, []int64{m2.ID, m2.ID}); err != nil {
+		t.Fatalf("UpdateMapping dup ids: %v", err)
+	}
+	// 不存在的映射 → ErrNotFound
+	if err := s.UpdateMapping(ctx, 9999, "x", nil, nil, nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	if err := s.DeleteMapping(ctx, mp.ID); err != nil {
+		t.Fatalf("DeleteMapping: %v", err)
+	}
+	got, _ = s.ResolveMapping(ctx, "glm-5.3")
+	if got != nil {
+		t.Error("mapping should be deleted")
 	}
 }
 
-func TestCooldownBackoff(t *testing.T) {
-	// threshold=3：第 3 次失败冷却 5min，第 4 次 10min，第 5 次 20min，封顶 60min
-	cases := []struct {
-		failures, threshold int
-		want                time.Duration
-	}{
-		{3, 3, 5 * time.Minute},
-		{4, 3, 10 * time.Minute},
-		{5, 3, 20 * time.Minute},
-		{10, 3, time.Hour}, // 封顶
-		{1, 3, 5 * time.Minute},
-	}
-	for _, c := range cases {
-		if got := Cooldown(c.failures, c.threshold); got != c.want {
-			t.Errorf("Cooldown(%d,%d) = %v, want %v", c.failures, c.threshold, got, c.want)
-		}
-	}
-}
-
-func TestBindModelsNewModelAutoAliasAndFill(t *testing.T) {
+func TestListMappingsWithEnabledModels(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
+	m, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
 
-	// NewModelName：自动建标准模型 + 自身为别名 + 填充参数
-	err := s.BindModels(ctx, ch.ID, []BindingInput{{
-		UpstreamModel: "glm-5.3-x", NewModelName: "glm-5.3",
-		ContextLength: ptrI64(128000),
-	}})
-	if err != nil {
-		t.Fatalf("BindModels: %v", err)
+	withModel, _ := s.CreateMapping(ctx, "has-model", ptrI64(1000), nil, []int64{m.ID})
+	without, _ := s.CreateMapping(ctx, "no-model", nil, nil, nil)
+
+	list, err := s.ListMappingsWithEnabledModels(ctx)
+	if err != nil || len(list) != 1 || list[0].ID != withModel.ID {
+		t.Fatalf("ListMappingsWithEnabledModels: %v %+v", err, list)
 	}
-	m, err := s.ResolveModel(ctx, "GLM-5.3-X") // 别名大小写不敏感命中
-	if err != nil || m == nil || m.Name != "glm-5.3" {
-		t.Fatalf("auto alias failed: %v %+v", err, m)
-	}
-	if m.ContextLength == nil || *m.ContextLength != 128000 {
-		t.Errorf("context_length not filled: %+v", m)
+	if list[0].ContextLength == nil || *list[0].ContextLength != 1000 {
+		t.Errorf("params missing: %+v", list[0])
 	}
 
-	// 重复绑定同一模型 → 更新 upstream_model（幂等）
-	err = s.BindModels(ctx, ch.ID, []BindingInput{{UpstreamModel: "glm-5.3-y", ModelID: &m.ID}})
-	if err != nil {
-		t.Fatalf("re-BindModels: %v", err)
+	// 渠道禁用后映射不再出现
+	if err := s.SetChannelEnabled(ctx, ch.ID, false); err != nil {
+		t.Fatalf("SetChannelEnabled: %v", err)
 	}
-	got, _ := s.GetChannel(ctx, ch.ID)
-	if len(got.Models) != 1 || got.Models[0].UpstreamModel != "glm-5.3-y" {
-		t.Errorf("binding should upsert: %+v", got.Models)
+	list, _ = s.ListMappingsWithEnabledModels(ctx)
+	if len(list) != 0 {
+		t.Fatalf("mapping on disabled channel must be hidden: %+v (mapping %d)", list, without.ID)
 	}
 }
+
+func ptrI64(v int64) *int64 { return &v }
 
 func TestLogInsertListGetCleanup(t *testing.T) {
 	s := openTest(t)

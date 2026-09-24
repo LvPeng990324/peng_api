@@ -93,6 +93,20 @@ func readJSON(t *testing.T, resp *http.Response) map[string]any {
 	return v
 }
 
+func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+// 建一个渠道，返回 id
+func (e *adminEnv) createChannel(t *testing.T, name, baseURL string) int64 {
+	t.Helper()
+	resp := e.call(t, http.MethodPost, "/api/channels",
+		`{"name":"`+name+`","base_url":"`+baseURL+`","api_key":"k","priority":1}`)
+	v := readJSON(t, resp)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create channel: %d %v", resp.StatusCode, v)
+	}
+	return int64(v["id"].(float64))
+}
+
 func TestLoginFlow(t *testing.T) {
 	st, _ := store.Open(":memory:")
 	defer st.Close()
@@ -138,42 +152,67 @@ func TestLoginFlow(t *testing.T) {
 
 func TestModelsAPI(t *testing.T) {
 	env := newAdminEnv(t)
+	chID := env.createChannel(t, "zhipu", "https://api.bigmodel.cn/coding/paas/v4")
 
-	// 创建
+	// 创建模型实体
 	resp := env.call(t, http.MethodPost, "/api/models",
-		`{"name":"glm-5.3","aliases":["GLM5.3"],"context_length":131072}`)
+		`{"channel_id":`+itoa(chID)+`,"name":"glm-5.3-free"}`)
 	v := readJSON(t, resp)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create: %d %v", resp.StatusCode, v)
 	}
 	id := int64(v["id"].(float64))
-
-	// 重名 → 400
-	resp = env.call(t, http.MethodPost, "/api/models", `{"name":"glm-5.3","aliases":[]}`)
-	readJSON(t, resp)
-	if resp.StatusCode != 400 {
-		t.Errorf("duplicate name: %d", resp.StatusCode)
+	if v["channel_id"].(float64) != float64(chID) || v["name"] != "glm-5.3-free" {
+		t.Errorf("created model: %v", v)
 	}
 
-	// 列表
+	// 同渠道重名 → 幂等返回同一实体（不报错）
+	resp = env.call(t, http.MethodPost, "/api/models",
+		`{"channel_id":`+itoa(chID)+`,"name":"glm-5.3-free"}`)
+	v = readJSON(t, resp)
+	if resp.StatusCode != 201 || int64(v["id"].(float64)) != id {
+		t.Errorf("duplicate create must be idempotent: %d %v", resp.StatusCode, v)
+	}
+
+	// 渠道不存在 → 400
+	resp = env.call(t, http.MethodPost, "/api/models", `{"channel_id":9999,"name":"m"}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 400 {
+		t.Errorf("missing channel: %d", resp.StatusCode)
+	}
+
+	// 缺字段 → 400
+	resp = env.call(t, http.MethodPost, "/api/models", `{"name":"m"}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 400 {
+		t.Errorf("missing channel_id: %d", resp.StatusCode)
+	}
+
+	// 列表：带渠道名与绑定标准名
 	resp = env.call(t, http.MethodGet, "/api/models", "")
 	v = readJSON(t, resp)
 	data := v["data"].([]any)
-	if len(data) != 1 || data[0].(map[string]any)["name"] != "glm-5.3" {
+	if len(data) != 1 || data[0].(map[string]any)["name"] != "glm-5.3-free" {
 		t.Fatalf("list: %v", v)
 	}
-	aliases := data[0].(map[string]any)["aliases"].([]any)
-	if len(aliases) != 1 || aliases[0] != "GLM5.3" {
-		t.Errorf("aliases: %v", aliases)
+	row := data[0].(map[string]any)
+	if row["channel_name"] != "zhipu" {
+		t.Errorf("channel_name: %v", row)
+	}
+	if mappings, ok := row["mappings"].([]any); !ok || len(mappings) != 0 {
+		t.Errorf("mappings should be empty: %v", row["mappings"])
 	}
 
-	// 更新（别名整体替换）
-	resp = env.call(t, http.MethodPut, "/api/models/"+itoa(id),
-		`{"name":"glm-5.3","aliases":["glm53"],"max_output_tokens":8192}`)
+	// 改名
+	resp = env.call(t, http.MethodPut, "/api/models/"+itoa(id), `{"name":"glm-5.3"}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("update: %d", resp.StatusCode)
 	}
 	readJSON(t, resp)
+	got, _ := env.st.GetModel(context.Background(), id)
+	if got == nil || got.Name != "glm-5.3" {
+		t.Errorf("rename failed: %+v", got)
+	}
 
 	// 删除
 	resp = env.call(t, http.MethodDelete, "/api/models/"+itoa(id), "")
@@ -181,6 +220,95 @@ func TestModelsAPI(t *testing.T) {
 		t.Fatalf("delete: %d", resp.StatusCode)
 	}
 	readJSON(t, resp)
+}
+
+func TestMappingsAPI(t *testing.T) {
+	env := newAdminEnv(t)
+	chID := env.createChannel(t, "zhipu", "http://x")
+
+	// 造两个模型实体
+	resp := env.call(t, http.MethodPost, "/api/models", `{"channel_id":`+itoa(chID)+`,"name":"glm-free"}`)
+	m1 := int64(readJSON(t, resp)["id"].(float64))
+	resp = env.call(t, http.MethodPost, "/api/models", `{"channel_id":`+itoa(chID)+`,"name":"glm-pro"}`)
+	m2 := int64(readJSON(t, resp)["id"].(float64))
+
+	// 创建映射（带参数 + 绑定）
+	resp = env.call(t, http.MethodPost, "/api/mappings",
+		`{"name":"glm-5.3","context_length":131072,"max_output_tokens":8192,"model_ids":[`+itoa(m1)+`,`+itoa(m2)+`]}`)
+	v := readJSON(t, resp)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create mapping: %d %v", resp.StatusCode, v)
+	}
+	mpID := int64(v["id"].(float64))
+	if len(v["bound_models"].([]any)) != 2 {
+		t.Errorf("bound_models: %v", v)
+	}
+
+	// 重名 → 400
+	resp = env.call(t, http.MethodPost, "/api/mappings", `{"name":"glm-5.3"}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 400 {
+		t.Errorf("duplicate name: %d", resp.StatusCode)
+	}
+	// 绑定不存在的模型 → 400
+	resp = env.call(t, http.MethodPost, "/api/mappings", `{"name":"bad","model_ids":[9999]}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 400 {
+		t.Errorf("invalid model_ids: %d", resp.StatusCode)
+	}
+	// 缺 name → 400
+	resp = env.call(t, http.MethodPost, "/api/mappings", `{}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 400 {
+		t.Errorf("missing name: %d", resp.StatusCode)
+	}
+
+	// 列表
+	resp = env.call(t, http.MethodGet, "/api/mappings", "")
+	v = readJSON(t, resp)
+	list := v["data"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("list: %v", v)
+	}
+	row := list[0].(map[string]any)
+	if row["name"] != "glm-5.3" || row["context_length"].(float64) != 131072 {
+		t.Errorf("mapping row: %v", row)
+	}
+	bound := row["bound_models"].([]any)
+	if len(bound) != 2 || bound[0].(map[string]any)["channel_name"] != "zhipu" {
+		t.Errorf("bound models: %v", bound)
+	}
+
+	// 全量更新：改参数 + 绑定整体替换为只剩 m2
+	resp = env.call(t, http.MethodPut, "/api/mappings/"+itoa(mpID),
+		`{"name":"glm-5.3","context_length":200000,"model_ids":[`+itoa(m2)+`]}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("update: %d", resp.StatusCode)
+	}
+	readJSON(t, resp)
+	mps, _ := env.st.ListMappings(context.Background())
+	if len(mps) != 1 || len(mps[0].BoundModels) != 1 || mps[0].BoundModels[0].ID != m2 ||
+		mps[0].ContextLength == nil || *mps[0].ContextLength != 200000 || mps[0].MaxOutputTokens != nil {
+		t.Errorf("update not applied: %+v", mps[0])
+	}
+
+	// 更新不存在的映射 → 404
+	resp = env.call(t, http.MethodPut, "/api/mappings/9999", `{"name":"x"}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 404 {
+		t.Errorf("missing mapping: %d", resp.StatusCode)
+	}
+
+	// 删除
+	resp = env.call(t, http.MethodDelete, "/api/mappings/"+itoa(mpID), "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("delete: %d", resp.StatusCode)
+	}
+	readJSON(t, resp)
+	mps, _ = env.st.ListMappings(context.Background())
+	if len(mps) != 0 {
+		t.Errorf("mapping should be deleted: %+v", mps)
+	}
 }
 
 func TestTokensAPI(t *testing.T) {
@@ -228,37 +356,30 @@ func TestTokensAPI(t *testing.T) {
 	readJSON(t, resp)
 }
 
-func itoa(v int64) string { return strconv.FormatInt(v, 10) }
-
 func TestChannelsAPI(t *testing.T) {
 	env := newAdminEnv(t)
 
-	// 先建模型供绑定
-	resp := env.call(t, http.MethodPost, "/api/models", `{"name":"glm-5.3","aliases":[]}`)
-	mv := readJSON(t, resp)
-	modelID := int64(mv["id"].(float64))
-
-	// 创建渠道（含绑定）
-	resp = env.call(t, http.MethodPost, "/api/channels", `{
+	// 创建渠道（不含模型绑定）
+	resp := env.call(t, http.MethodPost, "/api/channels", `{
 		"name":"zhipu","base_url":"https://api.bigmodel.cn/coding/paas/v4","api_key":"k1",
-		"priority":10,"test_model":"glm-5.3-free",
-		"models":[{"model_id":`+itoa(modelID)+`,"upstream_model":"glm-5.3-free"}]}`)
+		"priority":10,"test_model":"glm-5.3-free"}`)
 	v := readJSON(t, resp)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create: %d %v", resp.StatusCode, v)
 	}
 	chID := int64(v["id"].(float64))
 
-	// 列表：含绑定与状态字段
+	// 列表：无绑定/健康状态字段
 	resp = env.call(t, http.MethodGet, "/api/channels", "")
 	v = readJSON(t, resp)
 	ch := v["data"].([]any)[0].(map[string]any)
 	if ch["name"] != "zhipu" || ch["priority"].(float64) != 10 || ch["enabled"] != true {
 		t.Fatalf("list: %v", ch)
 	}
-	bindings := ch["models"].([]any)
-	if len(bindings) != 1 || bindings[0].(map[string]any)["upstream_model"] != "glm-5.3-free" {
-		t.Errorf("bindings: %v", bindings)
+	for _, gone := range []string{"models", "auto_disabled", "consecutive_failures", "disabled_until"} {
+		if _, ok := ch[gone]; ok {
+			t.Errorf("field %s must be gone: %v", gone, ch)
+		}
 	}
 
 	// 缺必填字段 → 400
@@ -271,7 +392,7 @@ func TestChannelsAPI(t *testing.T) {
 	// 更新
 	resp = env.call(t, http.MethodPut, "/api/channels/"+itoa(chID), `{
 		"name":"zhipu2","base_url":"https://example.com/v1","api_key":"k2","priority":5,
-		"enabled":true,"test_model":"m","models":[{"model_id":`+itoa(modelID)+`,"upstream_model":""}]}`)
+		"enabled":true,"test_model":"m"}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("update: %d", resp.StatusCode)
 	}
@@ -288,13 +409,11 @@ func TestChannelsAPI(t *testing.T) {
 		t.Error("channel should be disabled")
 	}
 
-	// reset 清失败状态
-	env.st.RecordFailure(context.Background(), chID, 1) // threshold=1 → 必禁用
+	// reset 端点已删除 → 404
 	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/reset", "")
-	readJSON(t, resp)
-	got, _ = env.st.GetChannel(context.Background(), chID)
-	if got.AutoDisabled || got.ConsecutiveFailures != 0 {
-		t.Errorf("reset failed: %+v", got)
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Errorf("reset endpoint must be gone: %d", resp.StatusCode)
 	}
 
 	// 删除
@@ -305,8 +424,8 @@ func TestChannelsAPI(t *testing.T) {
 	readJSON(t, resp)
 }
 
-func TestFetchModelsAndBind(t *testing.T) {
-	// 假上游 /models：一个能匹配已有模型，一个不能
+func TestFetchModelsAndAddChannelModels(t *testing.T) {
+	// 假上游 /models：一个已存在为模型实体，一个不存在
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/models" {
 			io.WriteString(w, `{"object":"list","data":[
@@ -320,16 +439,16 @@ func TestFetchModelsAndBind(t *testing.T) {
 	defer upstream.Close()
 
 	env := newAdminEnv(t)
-	resp := env.call(t, http.MethodPost, "/api/models", `{"name":"glm-5.3","aliases":["GLM5.3"]}`)
-	mv := readJSON(t, resp)
-	modelID := int64(mv["id"].(float64))
+	chID := env.createChannel(t, "up", upstream.URL)
 
-	resp = env.call(t, http.MethodPost, "/api/channels",
-		`{"name":"up","base_url":"`+upstream.URL+`","api_key":"k","priority":1}`)
-	cv := readJSON(t, resp)
-	chID := int64(cv["id"].(float64))
+	// 先有一个模型实体
+	resp := env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/models", `{"names":["GLM5.3"]}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("add models: %d", resp.StatusCode)
+	}
+	readJSON(t, resp)
 
-	// fetch-models：GLM5.3 应预匹配到已有模型，new-model-x 建议新建
+	// fetch-models：GLM5.3 已存在，new-model-x 不存在
 	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/fetch-models", "")
 	v := readJSON(t, resp)
 	if resp.StatusCode != 200 {
@@ -340,36 +459,43 @@ func TestFetchModelsAndBind(t *testing.T) {
 		t.Fatalf("expected 2 upstream models: %v", data)
 	}
 	first := data[0].(map[string]any)
-	if first["upstream_id"] != "GLM5.3" || first["suggested_model_id"].(float64) != float64(modelID) {
-		t.Errorf("pre-match failed: %v", first)
+	if first["name"] != "GLM5.3" || first["exists"] != true {
+		t.Errorf("exists flag wrong: %v", first)
 	}
 	second := data[1].(map[string]any)
-	if second["suggested_model_id"] != nil || second["suggested_name"] != "new-model-x" {
-		t.Errorf("new model suggestion wrong: %v", second)
+	if second["name"] != "new-model-x" || second["exists"] != false {
+		t.Errorf("exists flag wrong: %v", second)
+	}
+	if second["context_length"].(float64) != 64000 {
+		t.Errorf("upstream params should pass through: %v", second)
 	}
 
-	// 批量绑定：一个绑已有，一个新建
-	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/models", `{"bindings":[
-		{"upstream_model":"GLM5.3","model_id":`+itoa(modelID)+`},
-		{"upstream_model":"new-model-x","new_model_name":"new-model-x","context_length":64000}
-	]}`)
+	// 批量添加：已存在的跳过、新的创建（幂等，重复提交不报错）
+	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/models",
+		`{"names":["GLM5.3","new-model-x"]}`)
 	if resp.StatusCode != 200 {
-		t.Fatalf("bind: %d", resp.StatusCode)
+		t.Fatalf("add models 2: %d", resp.StatusCode)
 	}
 	readJSON(t, resp)
-
-	got, _ := env.st.GetChannel(context.Background(), chID)
-	if len(got.Models) != 2 {
-		t.Fatalf("bindings: %+v", got.Models)
+	models, _ := env.st.ModelsOfChannel(context.Background(), chID)
+	if len(models) != 2 {
+		t.Fatalf("expected 2 model entities: %+v", models)
 	}
-	// 新建的模型带参数、且自身为别名
-	m, err := env.st.ResolveModel(context.Background(), "NEW-MODEL-X")
-	if err != nil || m == nil || m.ContextLength == nil || *m.ContextLength != 64000 {
-		t.Errorf("auto-created model: %v %+v", err, m)
+
+	// 空 names → 400
+	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/models", `{"names":[]}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 400 {
+		t.Errorf("empty names: %d", resp.StatusCode)
 	}
 
 	// 渠道不存在 → 404
 	resp = env.call(t, http.MethodPost, "/api/channels/999/fetch-models", "")
+	readJSON(t, resp)
+	if resp.StatusCode != 404 {
+		t.Errorf("missing channel: %d", resp.StatusCode)
+	}
+	resp = env.call(t, http.MethodPost, "/api/channels/999/models", `{"names":["x"]}`)
 	readJSON(t, resp)
 	if resp.StatusCode != 404 {
 		t.Errorf("missing channel: %d", resp.StatusCode)
@@ -404,20 +530,16 @@ func TestChannelConnectivityTest(t *testing.T) {
 		t.Errorf("ping request body: %v", v["request_body"])
 	}
 	if !strings.Contains(v["response_body"].(string), "pong") {
-		t.Errorf("response body: %v", v["response_body"])
+		t.Errorf("response body: %v", v)
 	}
 	if !strings.Contains(gotBody, "cheap-model") {
 		t.Errorf("upstream got: %s", gotBody)
 	}
 
-	// 不写日志、不计数
+	// 不写日志
 	_, total, _ := env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
 	if total != 0 {
 		t.Error("ping must not write request_logs")
-	}
-	got, _ := env.st.GetChannel(context.Background(), chID)
-	if got.ConsecutiveFailures != 0 {
-		t.Error("ping must not touch failure counters")
 	}
 
 	// 未配置 test_model → 400

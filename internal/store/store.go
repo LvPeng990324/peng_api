@@ -8,19 +8,9 @@ import (
 
 type Store struct{ db *sql.DB }
 
+// 三级结构：channels 1─n models（模型实体）n─n model_mappings（标准名）
+// 模型可用性不落库，查询时按渠道 enabled 动态推导
 const schema = `
-CREATE TABLE IF NOT EXISTS models (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  context_length INTEGER,
-  max_output_tokens INTEGER,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS model_aliases (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  alias TEXT NOT NULL UNIQUE,
-  model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE
-);
 CREATE TABLE IF NOT EXISTS channels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -30,16 +20,26 @@ CREATE TABLE IF NOT EXISTS channels (
   priority INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
   test_model TEXT NOT NULL DEFAULT '',
-  auto_disabled INTEGER NOT NULL DEFAULT 0,
-  consecutive_failures INTEGER NOT NULL DEFAULT 0,
-  disabled_until DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS channel_models (
+CREATE TABLE IF NOT EXISTS models (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(channel_id, name)
+);
+CREATE TABLE IF NOT EXISTS model_mappings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  context_length INTEGER,
+  max_output_tokens INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS model_mapping_models (
+  mapping_id INTEGER NOT NULL REFERENCES model_mappings(id) ON DELETE CASCADE,
   model_id INTEGER NOT NULL REFERENCES models(id) ON DELETE CASCADE,
-  upstream_model TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (channel_id, model_id)
+  PRIMARY KEY (mapping_id, model_id)
 );
 CREATE TABLE IF NOT EXISTS tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,6 +91,26 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
+	// 旧「渠道↔标准模型↔别名」结构检测：存在 model_aliases 表即视为 legacy，
+	// 整体 DROP 重建（tokens/request_logs 保留，日志里的 channel_id 本就是无约束引用）
+	legacy, err := hasTable(db, "model_aliases")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if legacy {
+		for _, stmt := range []string{
+			`DROP TABLE IF EXISTS model_aliases`,
+			`DROP TABLE IF EXISTS channel_models`,
+			`DROP TABLE IF EXISTS models`,
+			`DROP TABLE IF EXISTS channels`,
+		} {
+			if _, err := db.Exec(stmt); err != nil {
+				db.Close()
+				return nil, err
+			}
+		}
+	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
@@ -101,6 +121,18 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+func hasTable(db *sql.DB, name string) (bool, error) {
+	var got string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&got)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ensureColumn 为已存在的表补列（列已存在时不动）

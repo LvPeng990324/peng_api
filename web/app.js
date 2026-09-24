@@ -29,21 +29,24 @@ createApp({
       sidebarOpen: false,
       tabs: [
         { key: 'channels', label: '渠道' },
-        { key: 'models', label: '模型与别名' },
+        { key: 'models', label: '模型' },
+        { key: 'mappings', label: '模型映射' },
         { key: 'tokens', label: 'Token' },
         { key: 'logs', label: '日志' },
       ],
       channels: [],
       models: [],
+      mappings: [],
       tokens: [],
       logs: { data: [], total: 0, page: 1, size: 20 },
       logFilter: { model: '', status: '', token_id: '', channel_id: '', start_time: '', end_time: '' },
       chForm: null,
-      boundDlg: null,
       chModelsDlg: null,
+      mappingModelsDlg: null,
       fetchDlg: null,
       testResult: null,
       modelForm: null,
+      mappingForm: null,
       newTokenName: '',
       createdToken: null,
       logDetail: null,
@@ -55,13 +58,8 @@ createApp({
       return t ? t.label : '';
     },
     testModelOptions() {
-      if (!this.chForm) return [];
-      return this.chForm.models
-        .map(b => {
-          const m = this.models.find(x => x.id === b.model_id);
-          return b.upstream_model || (m ? m.name : '');
-        })
-        .filter(Boolean);
+      if (!this.chForm || !this.chForm.id) return [];
+      return this.models.filter(m => m.channel_id === this.chForm.id).map(m => m.name);
     },
     logPages() {
       return Math.max(1, Math.ceil(this.logs.total / this.logs.size));
@@ -71,16 +69,14 @@ createApp({
       return this.logDetail.attempts.find(a => a.id === this.logDetail.sel) || this.logDetail.data;
     },
     sortedChannels() {
-      // 状态（正常在前）→ 优先级（大在前）→ id（小在前）
-      const status = c => (c.enabled && !c.auto_disabled) ? 0 : 1;
-      return [...this.channels].sort((a, b) =>
-        status(a) - status(b) || b.priority - a.priority || a.id - b.id);
+      // 优先级（大在前）→ id（小在前）
+      return [...this.channels].sort((a, b) => b.priority - a.priority || a.id - b.id);
     },
     fetchRows() {
       if (!this.fetchDlg) return [];
       const q = (this.fetchDlg.filter || '').trim().toLowerCase();
       if (!q) return this.fetchDlg.rows;
-      return this.fetchDlg.rows.filter(r => r.upstream_id.toLowerCase().includes(q));
+      return this.fetchDlg.rows.filter(r => r.name.toLowerCase().includes(q));
     },
     existingRows() {
       return this.fetchRows.filter(r => r.category === 'existing');
@@ -88,15 +84,22 @@ createApp({
     newRows() {
       return this.fetchRows.filter(r => r.category === 'new');
     },
-    staleRows() {
-      if (!this.fetchDlg) return [];
-      const q = (this.fetchDlg.filter || '').trim().toLowerCase();
-      if (!q) return this.fetchDlg.stale;
-      return this.fetchDlg.stale.filter(s =>
-        s.name.toLowerCase().includes(q) || s.upstream_name.toLowerCase().includes(q));
-    },
     allFetchChecked() {
-      return this.fetchRows.length > 0 && this.fetchRows.every(r => r.checked);
+      return this.newRows.length > 0 && this.newRows.every(r => r.checked);
+    },
+    mappingModelGroups() {
+      const groups = [];
+      const byChannel = new Map();
+      for (const m of this.models) {
+        const key = m.channel_name || '-';
+        if (!byChannel.has(key)) {
+          const g = { channel: key, items: [] };
+          byChannel.set(key, g);
+          groups.push(g);
+        }
+        byChannel.get(key).items.push(m);
+      }
+      return groups;
     },
   },
   methods: {
@@ -139,37 +142,35 @@ createApp({
     },
     async loadAll() {
       await this.guard(async () => {
-        const [ch, m, tk] = await Promise.all([
-          api('/channels'), api('/models'), api('/tokens'),
+        const [ch, m, mp, tk] = await Promise.all([
+          api('/channels'), api('/models'), api('/mappings'), api('/tokens'),
         ]);
         this.channels = ch.data || [];
         this.models = m.data || [];
+        this.mappings = mp.data || [];
         this.tokens = tk.data || [];
         await this.loadLogs();
       });
     },
     async loadChannels() { await this.guard(async () => { this.channels = (await api('/channels')).data || []; }); },
     async loadModels() { await this.guard(async () => { this.models = (await api('/models')).data || []; }); },
-    showBound(m) {
-      const channels = this.channels
-        .filter(c => (c.models || []).some(b => b.model_id === m.id))
-        .map(c => ({ id: c.id, name: c.name }));
-      this.boundDlg = { model: m.name, channels };
+    async loadMappings() { await this.guard(async () => { this.mappings = (await api('/mappings')).data || []; }); },
+    channelModels(c) {
+      return this.models.filter(m => m.channel_id === c.id);
     },
     showChannelModels(c) {
-      const models = (c.models || []).map(b => {
-        const m = this.models.find(x => x.id === b.model_id);
-        return {
-          model_id: b.model_id,
-          name: m ? m.name : ('#' + b.model_id),
-          upstream_model: b.upstream_model,
-        };
-      });
+      const models = this.channelModels(c).map(m => ({
+        name: m.name,
+        bound: (m.mappings || []).join(', ') || '未绑定',
+      }));
       this.chModelsDlg = { channel: c.name, models };
+    },
+    showMappingModels(m) {
+      this.mappingModelsDlg = { name: m.name, models: m.bound_models || [] };
     },
     toggleFetchAll(e) {
       const v = e.target.checked;
-      this.fetchRows.forEach(r => { r.checked = v; });
+      this.newRows.forEach(r => { r.checked = v; });
     },
     async loadTokens() { await this.guard(async () => { this.tokens = (await api('/tokens')).data || []; }); },
     async loadLogs() {
@@ -195,14 +196,10 @@ createApp({
         this.chForm = {
           id: c.id, name: c.name, base_url: c.base_url, api_key: c.api_key,
           priority: c.priority, enabled: c.enabled, test_model: c.test_model,
-          models: (c.models || []).map(b => ({ model_id: b.model_id, upstream_model: b.upstream_model })),
         };
       } else {
-        this.chForm = { name: '', base_url: '', api_key: '', priority: 0, enabled: true, test_model: '', models: [] };
+        this.chForm = { name: '', base_url: '', api_key: '', priority: 0, enabled: true, test_model: '' };
       }
-    },
-    addBinding() {
-      this.chForm.models.push({ model_id: this.models.length ? this.models[0].id : 0, upstream_model: '' });
     },
     async saveChannel() {
       await this.guard(async () => {
@@ -210,7 +207,6 @@ createApp({
         const body = {
           name: f.name, base_url: f.base_url, api_key: f.api_key,
           priority: f.priority, enabled: f.enabled, test_model: f.test_model,
-          models: f.models.filter(b => b.model_id),
         };
         if (f.id) await api('/channels/' + f.id, { method: 'PUT', body });
         else await api('/channels', { method: 'POST', body });
@@ -222,7 +218,7 @@ createApp({
       if (!confirm('删除渠道「' + c.name + '」？')) return;
       await this.guard(async () => {
         await api('/channels/' + c.id, { method: 'DELETE' });
-        await this.loadChannels();
+        await Promise.all([this.loadChannels(), this.loadModels()]);
       });
     },
     async toggleChannel(c) {
@@ -231,55 +227,26 @@ createApp({
         await this.loadChannels();
       });
     },
-    async resetChannel(c) {
-      await this.guard(async () => {
-        await api('/channels/' + c.id + '/reset', { method: 'POST' });
-        await this.loadChannels();
-      });
-    },
     async fetchModels(c) {
       await this.guard(async () => {
         const v = await api('/channels/' + c.id + '/fetch-models', { method: 'POST' });
-        const stdName = id => {
-          const m = this.models.find(x => x.id === id);
-          return m ? m.name : '';
-        };
-        const bindings = c.models || [];
-        const effName = b => (b.upstream_model || stdName(b.model_id)).toLowerCase();
-        const boundNames = new Set(bindings.map(effName));
-        const upstreamNames = new Set((v.data || []).map(r => r.upstream_id.toLowerCase()));
-        const rows = (v.data || []).map(r => {
-          const existing = boundNames.has(r.upstream_id.toLowerCase());
-          return {
-            checked: existing,
-            category: existing ? 'existing' : 'new',
-            upstream_id: r.upstream_id,
-            context_length: r.context_length,
-            max_output_tokens: r.max_output_tokens,
-            suggested_name: r.suggested_name,
-            target: r.suggested_model_id || '__new__',
-          };
-        });
-        const stale = bindings
-          .filter(b => !upstreamNames.has(effName(b)))
-          .map(b => ({
-            model_id: b.model_id,
-            name: stdName(b.model_id) || ('#' + b.model_id),
-            upstream_name: b.upstream_model || stdName(b.model_id),
-          }));
-        this.fetchDlg = { channelID: c.id, channelName: c.name, filter: '', rows, stale };
+        const rows = (v.data || []).map(r => ({
+          checked: !r.exists,
+          category: r.exists ? 'existing' : 'new',
+          name: r.name,
+          context_length: r.context_length,
+          max_output_tokens: r.max_output_tokens,
+        }));
+        this.fetchDlg = { channelID: c.id, channelName: c.name, filter: '', rows };
       });
     },
     async saveFetch() {
       await this.guard(async () => {
-        const bindings = this.fetchDlg.rows.filter(r => r.checked).map(r => {
-          const b = { upstream_model: r.upstream_id, context_length: r.context_length, max_output_tokens: r.max_output_tokens };
-          if (r.target === '__new__') b.new_model_name = r.suggested_name;
-          else b.model_id = r.target;
-          return b;
-        });
-        if (!bindings.length) { this.fetchDlg = null; return; }
-        await api('/channels/' + this.fetchDlg.channelID + '/models', { method: 'POST', body: { bindings } });
+        const names = this.fetchDlg.rows
+          .filter(r => r.checked && r.category === 'new')
+          .map(r => r.name);
+        if (!names.length) { this.fetchDlg = null; return; }
+        await api('/channels/' + this.fetchDlg.channelID + '/models', { method: 'POST', body: { names } });
         this.fetchDlg = null;
         await Promise.all([this.loadChannels(), this.loadModels()]);
       });
@@ -293,37 +260,66 @@ createApp({
       if (this.testResult && this.testResult.loading) this.testResult = null;
     },
 
-    // ---- 模型 ----
+    // ---- 模型（渠道下的模型实体） ----
     openModelForm(m) {
       if (m) {
-        this.modelForm = {
-          id: m.id, name: m.name, aliasesText: (m.aliases || []).join('\n'),
-          context_length: m.context_length, max_output_tokens: m.max_output_tokens,
-        };
+        this.modelForm = { id: m.id, channel_id: m.channel_id, name: m.name };
       } else {
-        this.modelForm = { name: '', aliasesText: '', context_length: null, max_output_tokens: null };
+        this.modelForm = { channel_id: this.channels.length ? this.channels[0].id : null, name: '' };
       }
     },
     async saveModel() {
       await this.guard(async () => {
         const f = this.modelForm;
-        const body = {
-          name: f.name,
-          aliases: f.aliasesText.split('\n').map(s => s.trim()).filter(Boolean),
-          context_length: f.context_length || null,
-          max_output_tokens: f.max_output_tokens || null,
-        };
-        if (f.id) await api('/models/' + f.id, { method: 'PUT', body });
-        else await api('/models', { method: 'POST', body });
+        if (f.id) {
+          await api('/models/' + f.id, { method: 'PUT', body: { name: f.name } });
+        } else {
+          await api('/models', { method: 'POST', body: { channel_id: f.channel_id, name: f.name } });
+        }
         this.modelForm = null;
         await this.loadModels();
       });
     },
     async delModel(m) {
-      if (!confirm('删除模型「' + m.name + '」？相关渠道绑定会一并移除。')) return;
+      if (!confirm('删除模型「' + m.name + '」？与标准名的绑定关系会一并移除。')) return;
       await this.guard(async () => {
         await api('/models/' + m.id, { method: 'DELETE' });
-        await Promise.all([this.loadModels(), this.loadChannels()]);
+        await Promise.all([this.loadModels(), this.loadMappings()]);
+      });
+    },
+
+    // ---- 模型映射（标准名） ----
+    openMappingForm(m) {
+      if (m) {
+        this.mappingForm = {
+          id: m.id, name: m.name,
+          context_length: m.context_length, max_output_tokens: m.max_output_tokens,
+          model_ids: (m.bound_models || []).map(x => x.id),
+        };
+      } else {
+        this.mappingForm = { name: '', context_length: null, max_output_tokens: null, model_ids: [] };
+      }
+    },
+    async saveMapping() {
+      await this.guard(async () => {
+        const f = this.mappingForm;
+        const body = {
+          name: f.name,
+          context_length: f.context_length || null,
+          max_output_tokens: f.max_output_tokens || null,
+          model_ids: f.model_ids,
+        };
+        if (f.id) await api('/mappings/' + f.id, { method: 'PUT', body });
+        else await api('/mappings', { method: 'POST', body });
+        this.mappingForm = null;
+        await Promise.all([this.loadMappings(), this.loadModels()]);
+      });
+    },
+    async delMapping(m) {
+      if (!confirm('删除映射「' + m.name + '」？与模型的绑定关系会一并移除。')) return;
+      await this.guard(async () => {
+        await api('/mappings/' + m.id, { method: 'DELETE' });
+        await Promise.all([this.loadMappings(), this.loadModels()]);
       });
     },
 

@@ -26,24 +26,8 @@ func (e *Engine) insertLog(entry *store.LogEntry) {
 	}
 }
 
-func (e *Engine) recordSuccess(channelID int64) {
-	ctx, cancel := detachedCtx()
-	defer cancel()
-	if err := e.store.RecordSuccess(ctx, channelID); err != nil {
-		log.Printf("record channel success: %v", err)
-	}
-}
-
-func (e *Engine) recordFailure(channelID int64) {
-	ctx, cancel := detachedCtx()
-	defer cancel()
-	if err := e.store.RecordFailure(ctx, channelID, e.failThreshold); err != nil {
-		log.Printf("record channel failure: %v", err)
-	}
-}
-
 func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
-	model *store.Model, candidates []store.Candidate, body []byte, stream bool) {
+	mapping *store.Mapping, candidates []store.Candidate, body []byte, stream bool) {
 
 	requestID := newUUID()
 	var failures []string
@@ -55,12 +39,8 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 			continue
 		}
 
-		// model 总是替换：upstream_model 优先，否则用标准名（客户端可能传的是别名）
-		upstreamName := cand.UpstreamModel
-		if upstreamName == "" {
-			upstreamName = model.Name
-		}
-		reqBody, err := replaceModel(body, upstreamName)
+		// model 字段总是替换为模型实体名（客户端传的只是标准名）
+		reqBody, err := replaceModel(body, cand.ModelName)
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid request body")
 			return
@@ -69,7 +49,7 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 		entry := store.LogEntry{
 			RequestID: requestID, Attempt: i + 1,
 			TokenID: &tok.ID, TokenName: tok.Name,
-			ModelRequested: model.Name, ModelCanonical: model.Name,
+			ModelRequested: mapping.Name, ModelCanonical: mapping.Name,
 			ChannelID: &cand.Channel.ID, ChannelName: cand.Channel.Name,
 			Stream: stream, RequestBody: string(reqBody),
 		}
@@ -80,7 +60,7 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 
 		start := time.Now()
 		res := p.Chat(r.Context(), cand.Channel, provider.ChatRequest{
-			Model: upstreamName, Body: reqBody, Stream: stream,
+			Model: cand.ModelName, Body: reqBody, Stream: stream,
 		})
 		entry.LatencyMS = time.Since(start).Milliseconds()
 
@@ -91,10 +71,9 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 			if r.Context().Err() != nil {
 				entry.Error = "client aborted: " + res.Err.Error()
 				e.insertLog(&entry)
-				return // 客户端已走，不计渠道失败，不再降级
+				return // 客户端已走，只记日志，不再降级
 			}
 			e.insertLog(&entry)
-			e.recordFailure(cand.Channel.ID)
 			failures = append(failures, cand.Channel.Name+": "+res.Err.Error())
 			continue
 		}
@@ -104,7 +83,7 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 		// 成功
 		if res.HTTPStatus >= 200 && res.HTTPStatus < 300 {
 			if stream {
-				e.finishStream(w, res.Stream, &entry, cand.Channel.ID)
+				e.finishStream(w, res.Stream, &entry)
 				return
 			}
 			ct := res.Header.Get("Content-Type")
@@ -118,23 +97,21 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 			entry.ResponseBody = string(res.Body)
 			entry.PromptTokens, entry.CompletionTokens, entry.PromptCacheHitTokens = parseUsage(res.Body)
 			e.insertLog(&entry)
-			e.recordSuccess(cand.Channel.ID)
 			return
 		}
 
 		entry.ResponseBody = string(res.Body)
 
-		// 可重试的 HTTP 失败
+		// 可降级的 HTTP 失败：429/5xx 试下一个模型
 		if res.HTTPStatus == 429 || res.HTTPStatus >= 500 {
 			entry.Status = "failed"
 			entry.Error = fmt.Sprintf("upstream %d", res.HTTPStatus)
 			e.insertLog(&entry)
-			e.recordFailure(cand.Channel.ID)
 			failures = append(failures, fmt.Sprintf("%s: upstream %d", cand.Channel.Name, res.HTTPStatus))
 			continue
 		}
 
-		// 其余 4xx：透传，不降级，不计渠道失败
+		// 其余 4xx：透传，不降级
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(res.HTTPStatus)
 		w.Write(res.Body)
@@ -144,7 +121,7 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 		return
 	}
 
-	writeOpenAIError(w, http.StatusServiceUnavailable, "all channels failed: "+strings.Join(failures, "; "))
+	writeOpenAIError(w, http.StatusServiceUnavailable, "all models failed: "+strings.Join(failures, "; "))
 }
 
 func originalModelName(body []byte) string {

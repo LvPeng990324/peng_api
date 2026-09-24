@@ -17,7 +17,7 @@
 
 - `main.go` — 装配入口（config→store→provider→engine→admin→web→server）
 - `internal/config` — flag/env/.env 配置解析（优先级：flag > 环境变量 > .env > 默认值）
-- `internal/store` — SQLite 访问层（models/channels/tokens/logs 四个文件按资源分）
+- `internal/store` — SQLite 访问层（channels/models/mappings/tokens/logs 按资源分文件；models 是渠道下的模型实体，mappings 是标准名模型映射）
 - `internal/relay` — 转发引擎：`handler.go`（/v1 入口）、`engine.go`（重试循环）、`stream.go`（SSE）、`util.go`（工具）
 - `internal/relay/provider` — 上游协议抽象；新增协议（如 anthropic）在此实现 `Provider` 接口并注册进 `main.go` 的 Registry
 - `internal/auth` — Bearer 中间件 + 管理端 session
@@ -30,11 +30,13 @@
 - **请求路径禁止 panic**：错误显式处理；chi Recoverer 兜底
 - **时间戳一律 Go 端写 UTC**（time.Now().UTC()），不依赖 DB DEFAULT；扫描 DATETIME 列进 time.Time
 - **sql.DB 必须 SetMaxOpenConns(1)**（单写者 + :memory: 测试安全）
-- **渠道失败计数用事务内原子自增**，禁止读-改-写
-- **发往上游的 model 字段总是被替换**：upstream_model 非空用它，否则用标准模型名（客户端传的可能是别名）
-- **上游 4xx（除 429）不重试不计数**，原样透传；5xx/429/网络错误/超时才降级和计数
-- **流式**：写出响应头后不再降级；客户端断开的日志不算渠道失败；日志 response_body 存拼接后的完整 SSE 文本
-- **DB 写日志/计数用脱离请求 ctx 的 detached ctx（5s 超时）**，防止客户端断开丢日志
+- **数据模型是三级结构**：`channels 1─n models(模型实体) n─n model_mappings(标准名)`；渠道只与模型实体关联，标准名只与模型实体关联
+- **请求匹配**：客户端 model 与标准名大小写敏感精确匹配（无别名）→ 展开绑定的模型实体，按渠道 priority DESC、模型 id ASC 逐个尝试
+- **模型可用性 = 渠道 enabled 动态推导**（JOIN channels 查询时过滤），不落库；无渠道自动禁用、无连续失败统计，只有手动启停
+- **发往上游的 model 字段总是被替换**为模型实体的 name（上游真实模型名）
+- **上游 4xx（除 429）不重试**，原样透传；5xx/429/网络错误/超时才降级到下一模型
+- **流式**：写出响应头后不再降级；客户端断开只记日志；日志 response_body 存拼接后的完整 SSE 文本
+- **DB 写日志用脱离请求 ctx 的 detached ctx（5s 超时）**，防止客户端断开丢日志
 - 客户端错误格式 `{"error":{"message","type","code"}}`；管理 API `{"error":"..."}`
 - 管理端 session 在内存中，重启失效是预期行为
 - 新增/修改管理 API 时同步改 `web/app.js` + `web/index.html`

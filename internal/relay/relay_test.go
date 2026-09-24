@@ -158,7 +158,7 @@ func newTestEnv(t *testing.T, fbTimeout time.Duration) *testEnv {
 		t.Fatalf("CreateToken: %v", err)
 	}
 	reg := provider.NewRegistry(provider.NewOpenAI(&http.Client{}, 10*time.Second, fbTimeout))
-	engine := NewEngine(st, reg, 3)
+	engine := NewEngine(st, reg)
 	r := chi.NewRouter()
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(auth.Bearer(st))
@@ -170,20 +170,29 @@ func newTestEnv(t *testing.T, fbTimeout time.Duration) *testEnv {
 	return &testEnv{st: st, tok: tok, client: srv}
 }
 
-func (e *testEnv) addChannel(t *testing.T, name, baseURL string, priority int, modelID int64, upstreamModel string) *store.Channel {
+// 建渠道 + 其下一个模型实体，返回两者
+func (e *testEnv) addModel(t *testing.T, channelName, baseURL string, priority int, modelName string) (*store.Channel, *store.Model) {
 	t.Helper()
 	ch, err := e.st.CreateChannel(context.Background(), store.Channel{
-		Name: name, Type: "openai", BaseURL: baseURL, APIKey: "upkey", Priority: priority,
+		Name: channelName, Type: "openai", BaseURL: baseURL, APIKey: "upkey", Priority: priority,
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if err := e.st.BindModels(context.Background(), ch.ID, []store.BindingInput{{
-		UpstreamModel: upstreamModel, ModelID: &modelID,
-	}}); err != nil {
-		t.Fatalf("BindModels: %v", err)
+	m, err := e.st.CreateModel(context.Background(), ch.ID, modelName)
+	if err != nil {
+		t.Fatalf("CreateModel: %v", err)
 	}
-	return ch
+	return ch, m
+}
+
+func (e *testEnv) addMapping(t *testing.T, name string, modelIDs ...int64) *store.Mapping {
+	t.Helper()
+	mp, err := e.st.CreateMapping(context.Background(), name, nil, nil, modelIDs)
+	if err != nil {
+		t.Fatalf("CreateMapping: %v", err)
+	}
+	return mp
 }
 
 func (e *testEnv) chat(t *testing.T, body string) *http.Response {
@@ -207,7 +216,7 @@ func readBody(t *testing.T, resp *http.Response) string {
 
 // ---------- 非流式引擎测试 ----------
 
-func TestEngineSuccessAliasAndUpstreamRename(t *testing.T) {
+func TestEngineSuccessMappingAndEntityRename(t *testing.T) {
 	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`)
@@ -215,10 +224,11 @@ func TestEngineSuccessAliasAndUpstreamRename(t *testing.T) {
 	defer up.close()
 
 	env := newTestEnv(t, 5*time.Second)
-	m, _ := env.st.CreateModel(context.Background(), "glm-5.3", []string{"GLM5.3"}, nil, nil)
-	env.addChannel(t, "zhipu", up.url(), 1, m.ID, "glm-5.3-free")
+	// 标准名 glm-5.3 → 绑定 zhipu 渠道下的模型实体 glm-5.3-free
+	_, m := env.addModel(t, "zhipu", up.url(), 1, "glm-5.3-free")
+	env.addMapping(t, "glm-5.3", m.ID)
 
-	resp := env.chat(t, `{"model":"GLM5.3","messages":[{"role":"user","content":"ping"}]}`)
+	resp := env.chat(t, `{"model":"glm-5.3","messages":[{"role":"user","content":"ping"}]}`)
 	body := readBody(t, resp)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
@@ -226,22 +236,41 @@ func TestEngineSuccessAliasAndUpstreamRename(t *testing.T) {
 	if !strings.Contains(body, "pong") {
 		t.Errorf("upstream body not passed through: %s", body)
 	}
-	// 上游收到的 model 必须是 upstream_model，不是客户端的别名
+	// 上游收到的 model 必须是模型实体名，不是标准名
 	if !strings.Contains(up.lastBody(), `"model":"glm-5.3-free"`) {
 		t.Errorf("upstream got wrong model: %s", up.lastBody())
 	}
-	// 日志：成功一条，记录别名→标准模型、token、usage
+	// 日志：成功一条，记录标准名、token、usage
 	logs, total, err := env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
 	if err != nil || total != 1 {
 		t.Fatalf("logs: %v total=%d", err, total)
 	}
 	l := logs[0]
-	if l.Status != "success" || l.ModelRequested != "GLM5.3" || l.ModelCanonical != "glm-5.3" ||
+	if l.Status != "success" || l.ModelRequested != "glm-5.3" || l.ModelCanonical != "glm-5.3" ||
 		l.TokenName != "tester" || l.ChannelName != "zhipu" || l.Attempt != 1 {
 		t.Errorf("bad log entry: %+v", l)
 	}
 	if l.PromptTokens == nil || *l.PromptTokens != 3 {
 		t.Errorf("usage not parsed: %+v", l)
+	}
+}
+
+func TestEngineModelNameCaseSensitive(t *testing.T) {
+	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {})
+	defer up.close()
+
+	env := newTestEnv(t, 5*time.Second)
+	_, m := env.addModel(t, "zhipu", up.url(), 1, "glm-5.3-free")
+	env.addMapping(t, "glm-5.3", m.ID)
+
+	// 大小写不同 → 404，不命中
+	resp := env.chat(t, `{"model":"GLM-5.3","messages":[]}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != 404 || !strings.Contains(body, "model not found") {
+		t.Errorf("case-insensitive hit must not happen: %d %s", resp.StatusCode, body)
+	}
+	if up.hits.Load() != 0 {
+		t.Error("upstream must not be hit")
 	}
 }
 
@@ -257,9 +286,10 @@ func TestEngineFailoverOn500(t *testing.T) {
 	defer good.close()
 
 	env := newTestEnv(t, 5*time.Second)
-	m, _ := env.st.CreateModel(context.Background(), "m1", nil, nil, nil)
-	chBad := env.addChannel(t, "bad", bad.url(), 10, m.ID, "m1") // 优先级高，先试
-	env.addChannel(t, "good", good.url(), 1, m.ID, "m1")
+	// 同一映射绑定两个渠道下的模型实体；bad 优先级高，先试
+	_, mBad := env.addModel(t, "bad", bad.url(), 10, "m1-bad")
+	_, mGood := env.addModel(t, "good", good.url(), 1, "m1-good")
+	env.addMapping(t, "m1", mBad.ID, mGood.ID)
 
 	resp := env.chat(t, `{"model":"m1","messages":[]}`)
 	if resp.StatusCode != 200 {
@@ -284,14 +314,13 @@ func TestEngineFailoverOn500(t *testing.T) {
 	if failed == nil || success == nil || failed.ChannelName != "bad" || success.Attempt != 2 {
 		t.Errorf("bad attempts: %+v", logs)
 	}
-	// bad 计一次失败；good 无失败
-	got, _ := env.st.GetChannel(context.Background(), chBad.ID)
-	if got.ConsecutiveFailures != 1 {
-		t.Errorf("bad channel failures = %d, want 1", got.ConsecutiveFailures)
+	// 每个候选的上游 model 都被替换为各自的模型实体名
+	if !strings.Contains(bad.lastBody(), `"model":"m1-bad"`) || !strings.Contains(good.lastBody(), `"model":"m1-good"`) {
+		t.Errorf("entity name not replaced: %s / %s", bad.lastBody(), good.lastBody())
 	}
 }
 
-func TestEngine400PassthroughNoFailoverNoCount(t *testing.T) {
+func TestEngine400PassthroughNoFailover(t *testing.T) {
 	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		io.WriteString(w, `{"error":{"message":"bad request: max_tokens too large"}}`)
@@ -303,9 +332,9 @@ func TestEngine400PassthroughNoFailoverNoCount(t *testing.T) {
 	defer other.close()
 
 	env := newTestEnv(t, 5*time.Second)
-	m, _ := env.st.CreateModel(context.Background(), "m1", nil, nil, nil)
-	ch := env.addChannel(t, "ch", up.url(), 10, m.ID, "m1")
-	env.addChannel(t, "other", other.url(), 1, m.ID, "m1")
+	_, m1 := env.addModel(t, "ch", up.url(), 10, "m1")
+	_, m2 := env.addModel(t, "other", other.url(), 1, "m1")
+	env.addMapping(t, "m1", m1.ID, m2.ID)
 
 	resp := env.chat(t, `{"model":"m1","messages":[]}`)
 	body := readBody(t, resp)
@@ -315,38 +344,66 @@ func TestEngine400PassthroughNoFailoverNoCount(t *testing.T) {
 	if other.hits.Load() != 0 {
 		t.Error("4xx must not trigger failover")
 	}
-	got, _ := env.st.GetChannel(context.Background(), ch.ID)
-	if got.ConsecutiveFailures != 0 {
-		t.Error("4xx must not count as channel failure")
-	}
 }
 
-func TestEngineAllFail503AndAutoDisable(t *testing.T) {
+func TestEngineAllFail503(t *testing.T) {
 	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(502)
 	})
 	defer up.close()
 
-	env := newTestEnv(t, 5*time.Second) // failThreshold=3
-	m, _ := env.st.CreateModel(context.Background(), "m1", nil, nil, nil)
-	ch := env.addChannel(t, "only", up.url(), 1, m.ID, "m1")
+	env := newTestEnv(t, 5*time.Second)
+	_, m := env.addModel(t, "only", up.url(), 1, "m1")
+	env.addMapping(t, "m1", m.ID)
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ { // 不再自动禁用：每次都尝试、每次都 503
 		resp := env.chat(t, `{"model":"m1","messages":[]}`)
 		body := readBody(t, resp)
-		if resp.StatusCode != 503 || !strings.Contains(body, "all channels failed") {
+		if resp.StatusCode != 503 || !strings.Contains(body, "all models failed") {
 			t.Fatalf("attempt %d: %d %s", i, resp.StatusCode, body)
 		}
 	}
-	got, _ := env.st.GetChannel(context.Background(), ch.ID)
-	if !got.AutoDisabled || got.DisabledUntil == nil {
-		t.Fatalf("channel should be auto-disabled after 3 failures: %+v", got)
+	if up.hits.Load() != 4 {
+		t.Errorf("disabled-by-failure must not exist: hits = %d", up.hits.Load())
 	}
-	// 第 4 次：唯一渠道已禁用 → 503 no available channel
+}
+
+func TestEngineMappingWithoutModels503(t *testing.T) {
+	env := newTestEnv(t, 5*time.Second)
+	env.addMapping(t, "m1") // 未绑定模型实体
+
 	resp := env.chat(t, `{"model":"m1","messages":[]}`)
 	body := readBody(t, resp)
-	if resp.StatusCode != 503 || !strings.Contains(body, "no available channel") {
-		t.Errorf("expected no-channel 503: %d %s", resp.StatusCode, body)
+	if resp.StatusCode != 503 || !strings.Contains(body, "no available model") {
+		t.Errorf("unbound mapping: %d %s", resp.StatusCode, body)
+	}
+}
+
+func TestEngineDisabledChannelSkipped(t *testing.T) {
+	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	})
+	defer up.close()
+	off := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"content":"off"}}]}`)
+	})
+	defer off.close()
+
+	env := newTestEnv(t, 5*time.Second)
+	chOff, mOff := env.addModel(t, "off", off.url(), 100, "m1") // 优先级最高但禁用
+	_, mOn := env.addModel(t, "on", up.url(), 1, "m1")
+	env.addMapping(t, "m1", mOff.ID, mOn.ID)
+	if err := env.st.SetChannelEnabled(context.Background(), chOff.ID, false); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := env.chat(t, `{"model":"m1","messages":[]}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != 200 || !strings.Contains(body, "ok") {
+		t.Errorf("disabled channel must be skipped: %d %s", resp.StatusCode, body)
+	}
+	if off.hits.Load() != 0 {
+		t.Error("disabled channel must not be hit")
 	}
 }
 
@@ -398,8 +455,8 @@ func TestEngineStreamPassthroughAndLog(t *testing.T) {
 	defer up.close()
 
 	env := newTestEnv(t, 5*time.Second)
-	m, _ := env.st.CreateModel(context.Background(), "m1", nil, nil, nil)
-	env.addChannel(t, "ch", up.url(), 1, m.ID, "m1")
+	_, m := env.addModel(t, "ch", up.url(), 1, "m1")
+	env.addMapping(t, "m1", m.ID)
 
 	resp := env.chat(t, `{"model":"m1","messages":[],"stream":true}`)
 	body := readBody(t, resp)
@@ -437,9 +494,9 @@ func TestEngineStreamFirstByteTimeoutFailover(t *testing.T) {
 	defer fast.close()
 
 	env := newTestEnv(t, 150*time.Millisecond) // 首字节超时 150ms
-	m, _ := env.st.CreateModel(context.Background(), "m1", nil, nil, nil)
-	env.addChannel(t, "slow", slow.URL, 10, m.ID, "m1")
-	env.addChannel(t, "fast", fast.url(), 1, m.ID, "m1")
+	_, mSlow := env.addModel(t, "slow", slow.URL, 10, "m1")
+	_, mFast := env.addModel(t, "fast", fast.url(), 1, "m1")
+	env.addMapping(t, "m1", mSlow.ID, mFast.ID)
 
 	resp := env.chat(t, `{"model":"m1","messages":[],"stream":true}`)
 	body := readBody(t, resp)
@@ -459,14 +516,13 @@ func TestFinishStreamUpstreamInterrupt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	ch, _ := st.CreateChannel(context.Background(), store.Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
 	reg := provider.NewRegistry()
-	e := NewEngine(st, reg, 3)
+	e := NewEngine(st, reg)
 
 	src := io.NopCloser(&failAfterReader{data: []byte("data: partial\n\n")})
 	entry := &store.LogEntry{RequestID: "r1", Attempt: 1, Status: "success", Stream: true}
 	rec := httptest.NewRecorder()
-	e.finishStream(rec, src, entry, ch.ID)
+	e.finishStream(rec, src, entry)
 
 	if entry.Status != "failed" || !strings.Contains(entry.Error, "stream interrupted") {
 		t.Errorf("entry: %+v", entry)
@@ -485,10 +541,6 @@ func TestFinishStreamUpstreamInterrupt(t *testing.T) {
 	if detail.ResponseBody != "data: partial\n\n" {
 		t.Errorf("partial body must be logged: %+v", detail)
 	}
-	got, _ := st.GetChannel(context.Background(), ch.ID)
-	if got.ConsecutiveFailures != 1 {
-		t.Error("mid-stream failure must count")
-	}
 }
 
 type failAfterReader struct {
@@ -504,23 +556,22 @@ func (f *failAfterReader) Read(p []byte) (int, error) {
 	return copy(p, f.data), nil
 }
 
-// finishStream 单元级：客户端断开不计渠道失败
+// finishStream 单元级：客户端断开只记日志
 func TestFinishStreamClientDisconnect(t *testing.T) {
 	st, _ := store.Open(":memory:")
 	defer st.Close()
-	ch, _ := st.CreateChannel(context.Background(), store.Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
-	e := NewEngine(st, provider.NewRegistry(), 3)
+	e := NewEngine(st, provider.NewRegistry())
 
 	src := io.NopCloser(strings.NewReader("data: a\n\ndata: b\n\n"))
 	entry := &store.LogEntry{RequestID: "r2", Attempt: 1, Stream: true}
-	e.finishStream(&brokenWriter{header: http.Header{}}, src, entry, ch.ID)
+	e.finishStream(&brokenWriter{header: http.Header{}}, src, entry)
 
 	if entry.Status != "failed" || !strings.Contains(entry.Error, "client disconnected") {
 		t.Errorf("entry: %+v", entry)
 	}
-	got, _ := st.GetChannel(context.Background(), ch.ID)
-	if got.ConsecutiveFailures != 0 {
-		t.Error("client disconnect must NOT count as channel failure")
+	_, total, _ := st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
+	if total != 1 {
+		t.Fatalf("expected 1 log, got %d", total)
 	}
 }
 
@@ -538,9 +589,12 @@ func TestModelsEndpoint(t *testing.T) {
 	defer up.close()
 
 	env := newTestEnv(t, 5*time.Second)
-	m, _ := env.st.CreateModel(context.Background(), "glm-5.3", nil, ptr(131072), ptr(8192))
-	env.st.CreateModel(context.Background(), "hidden", nil, nil, nil) // 无渠道绑定
-	env.addChannel(t, "ch", up.url(), 1, m.ID, "")
+	_, m := env.addModel(t, "ch", up.url(), 1, "glm-5.3-free")
+	cl, mot := int64(131072), int64(8192)
+	if _, err := env.st.CreateMapping(context.Background(), "glm-5.3", &cl, &mot, []int64{m.ID}); err != nil {
+		t.Fatal(err)
+	}
+	env.st.CreateMapping(context.Background(), "hidden", nil, nil, nil) // 未绑定模型
 
 	req, _ := http.NewRequest(http.MethodGet, env.client.URL+"/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+env.tok.Token)
@@ -555,9 +609,7 @@ func TestModelsEndpoint(t *testing.T) {
 	if !strings.Contains(body, `"id":"glm-5.3"`) || strings.Contains(body, "hidden") {
 		t.Errorf("models list wrong: %s", body)
 	}
-	if !strings.Contains(body, `"context_length":131072`) {
-		t.Errorf("context_length missing: %s", body)
+	if !strings.Contains(body, `"context_length":131072`) || !strings.Contains(body, `"max_output_tokens":8192`) {
+		t.Errorf("mapping params missing: %s", body)
 	}
 }
-
-func ptr(v int64) *int64 { return &v }

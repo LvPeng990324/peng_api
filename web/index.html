@@ -36,7 +36,11 @@
         </a>
         <a class="nav-item" :class="{on: tab==='models'}" @click="switchTab('models')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>
-          <span>模型与别名</span>
+          <span>模型</span>
+        </a>
+        <a class="nav-item" :class="{on: tab==='mappings'}" @click="switchTab('mappings')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span>模型映射</span>
         </a>
         <a class="nav-item" :class="{on: tab==='tokens'}" @click="switchTab('tokens')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.85 12.15 9.2-9.2"/><path d="M16 5l3 3"/></svg>
@@ -68,7 +72,7 @@
       <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>ID</th><th>名称</th><th>地址</th><th>优先级</th><th>模型数</th><th>状态</th><th>连续失败</th><th>操作</th>
+          <th>ID</th><th>名称</th><th>地址</th><th>优先级</th><th>模型数</th><th>状态</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="c in sortedChannels" :key="c.id">
@@ -76,29 +80,26 @@
             <td>{{ c.name }}</td>
             <td class="mono wrap">{{ c.base_url }}</td>
             <td>{{ c.priority }}</td>
-            <td><a class="td-link" @click="showChannelModels(c)">{{ c.models.length }}</a></td>
+            <td><a class="td-link" @click="showChannelModels(c)">{{ channelModels(c).length }}</a></td>
             <td>
               <span v-if="!c.enabled" class="tag gray">已停用</span>
-              <span v-else-if="c.auto_disabled" class="tag red" :title="'冷却至 ' + fmtTime(c.disabled_until)">自动禁用</span>
               <span v-else class="tag green">正常</span>
             </td>
-            <td>{{ c.consecutive_failures }}</td>
             <td class="ops">
               <a @click="openChannelForm(c)">编辑</a>
               <a @click="fetchModels(c)">获取模型</a>
               <a @click="testChannel(c)">测试</a>
-              <a v-if="c.auto_disabled" @click="resetChannel(c)">重置</a>
               <a @click="toggleChannel(c)">{{ c.enabled ? '停用' : '启用' }}</a>
               <a class="danger" @click="delChannel(c)">删除</a>
             </td>
           </tr>
-          <tr v-if="!channels.length"><td colspan="8" class="empty">暂无渠道，点击右上角新建</td></tr>
+          <tr v-if="!channels.length"><td colspan="7" class="empty">暂无渠道，点击右上角新建</td></tr>
         </tbody>
       </table>
       </div>
     </section>
 
-    <!-- ============ 模型与别名 ============ -->
+    <!-- ============ 模型 ============ -->
     <section v-if="tab==='models'">
       <div class="bar">
         <button class="primary" @click="openModelForm(null)">新建模型</button>
@@ -106,21 +107,49 @@
       <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>标准名</th><th>别名</th><th>上下文长度</th><th>最大输出</th><th>渠道数</th><th>操作</th>
+          <th>ID</th><th>名称</th><th>所属渠道</th><th>绑定标准名</th><th>创建时间</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="m in models" :key="m.id">
+            <td>{{ m.id }}</td>
             <td class="mono">{{ m.name }}</td>
-            <td class="mono wrap">{{ (m.aliases||[]).join(', ') || '-' }}</td>
-            <td>{{ m.context_length ?? '-' }}</td>
-            <td>{{ m.max_output_tokens ?? '-' }}</td>
-            <td><a class="td-link" @click="showBound(m)">{{ m.bound_channels }}</a></td>
+            <td>{{ m.channel_name || '-' }}</td>
+            <td class="mono wrap">{{ (m.mappings||[]).join(', ') || '-' }}</td>
+            <td>{{ fmtTime(m.created_at) }}</td>
             <td class="ops">
               <a @click="openModelForm(m)">编辑</a>
               <a class="danger" @click="delModel(m)">删除</a>
             </td>
           </tr>
-          <tr v-if="!models.length"><td colspan="6" class="empty">暂无模型</td></tr>
+          <tr v-if="!models.length"><td colspan="6" class="empty">暂无模型，可在渠道页「获取模型」批量创建</td></tr>
+        </tbody>
+      </table>
+      </div>
+    </section>
+
+    <!-- ============ 模型映射 ============ -->
+    <section v-if="tab==='mappings'">
+      <div class="bar">
+        <button class="primary" @click="openMappingForm(null)">新建映射</button>
+      </div>
+      <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>ID</th><th>标准名</th><th>上下文长度</th><th>最大输出</th><th>绑定模型数</th><th>操作</th>
+        </tr></thead>
+        <tbody>
+          <tr v-for="m in mappings" :key="m.id">
+            <td>{{ m.id }}</td>
+            <td class="mono">{{ m.name }}</td>
+            <td>{{ m.context_length ?? '-' }}</td>
+            <td>{{ m.max_output_tokens ?? '-' }}</td>
+            <td><a class="td-link" @click="showMappingModels(m)">{{ (m.bound_models||[]).length }}</a></td>
+            <td class="ops">
+              <a @click="openMappingForm(m)">编辑</a>
+              <a class="danger" @click="delMapping(m)">删除</a>
+            </td>
+          </tr>
+          <tr v-if="!mappings.length"><td colspan="6" class="empty">暂无模型映射</td></tr>
         </tbody>
       </table>
       </div>
@@ -221,22 +250,6 @@
           </select>
         </label>
         <label class="row"><input type="checkbox" v-model="chForm.enabled"> 启用</label>
-        <h4>模型绑定</h4>
-        <table>
-          <thead><tr><th>标准模型</th><th>上游模型名（空=用标准名）</th><th></th></tr></thead>
-          <tbody>
-            <tr v-for="(b, i) in chForm.models" :key="i">
-              <td>
-                <select v-model.number="b.model_id">
-                  <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-                </select>
-              </td>
-              <td><input v-model="b.upstream_model" placeholder="留空则用标准名"></td>
-              <td><a class="danger" @click="chForm.models.splice(i,1)">移除</a></td>
-            </tr>
-          </tbody>
-        </table>
-        <button @click="addBinding">添加绑定</button>
         <div class="actions">
           <button class="primary" @click="saveChannel">保存</button>
           <button @click="chForm=null">取消</button>
@@ -244,21 +257,40 @@
       </div>
     </div>
 
-    <!-- ============ 渠道绑定模型弹窗 ============ -->
+    <!-- ============ 渠道模型实体弹窗 ============ -->
     <div class="mask" v-if="chModelsDlg" @click.self="chModelsDlg=null">
       <div class="card modal">
-        <h3>绑定模型：{{ chModelsDlg.channel }}</h3>
+        <h3>模型实体：{{ chModelsDlg.channel }}</h3>
         <table>
-          <thead><tr><th>标准模型</th><th>上游模型名</th></tr></thead>
+          <thead><tr><th>模型</th><th>绑定标准名</th></tr></thead>
           <tbody>
-            <tr v-for="m in chModelsDlg.models" :key="m.model_id + m.upstream_model">
+            <tr v-for="m in chModelsDlg.models" :key="m.name">
               <td class="mono">{{ m.name }}</td>
-              <td class="mono">{{ m.upstream_model || '（同标准名）' }}</td>
+              <td class="mono">{{ m.bound }}</td>
             </tr>
-            <tr v-if="!chModelsDlg.models.length"><td colspan="2" class="empty">未绑定任何模型</td></tr>
+            <tr v-if="!chModelsDlg.models.length"><td colspan="2" class="empty">该渠道暂无模型实体，可通过「获取模型」创建</td></tr>
           </tbody>
         </table>
         <div class="actions"><button @click="chModelsDlg=null">关闭</button></div>
+      </div>
+    </div>
+
+    <!-- ============ 映射绑定模型弹窗 ============ -->
+    <div class="mask" v-if="mappingModelsDlg" @click.self="mappingModelsDlg=null">
+      <div class="card modal">
+        <h3>绑定模型：{{ mappingModelsDlg.name }}</h3>
+        <table>
+          <thead><tr><th>ID</th><th>模型</th><th>所属渠道</th></tr></thead>
+          <tbody>
+            <tr v-for="m in mappingModelsDlg.models" :key="m.id">
+              <td>{{ m.id }}</td>
+              <td class="mono">{{ m.name }}</td>
+              <td>{{ m.channel_name }}</td>
+            </tr>
+            <tr v-if="!mappingModelsDlg.models.length"><td colspan="3" class="empty">未绑定模型，客户端无法请求到该标准名</td></tr>
+          </tbody>
+        </table>
+        <div class="actions"><button @click="mappingModelsDlg=null">关闭</button></div>
       </div>
     </div>
 
@@ -266,64 +298,42 @@
     <div class="mask" v-if="fetchDlg" @click.self="fetchDlg=null">
       <div class="card modal wide">
         <h3>获取到的上游模型：{{ fetchDlg.channelName }}</h3>
-        <p class="dim">勾选要绑定的模型，并为每个选择对应的标准模型（或新建）。「已有」默认勾选；「已失效」仅展示，解绑请到渠道编辑中移除。</p>
+        <p class="dim">勾选要创建为模型实体的上游模型（「可增加」组默认勾选）。「已有」项已是该渠道的模型实体，仅作展示。</p>
         <div class="bar">
-          <input v-model="fetchDlg.filter" placeholder="按上游模型名筛选…">
+          <input v-model="fetchDlg.filter" placeholder="按模型名筛选…">
         </div>
-        <details open class="fetch-group">
-          <summary>已有（{{ existingRows.length }}）</summary>
-          <table>
-            <thead><tr><th><input type="checkbox" :checked="allFetchChecked" @change="toggleFetchAll"></th><th>上游模型</th><th>上下文</th><th>绑定到</th></tr></thead>
-            <tbody>
-              <tr v-for="r in existingRows" :key="r.upstream_id">
-                <td><input type="checkbox" v-model="r.checked"></td>
-                <td class="mono">{{ r.upstream_id }}</td>
-                <td>{{ r.context_length ?? '-' }}</td>
-                <td>
-                  <select v-model="r.target">
-                    <option value="__new__">＋新建：{{ r.suggested_name }}</option>
-                    <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-                  </select>
-                </td>
-              </tr>
-              <tr v-if="!existingRows.length"><td colspan="4" class="empty">无</td></tr>
-            </tbody>
-          </table>
-        </details>
         <details open class="fetch-group">
           <summary>可增加（{{ newRows.length }}）</summary>
           <table>
-            <thead><tr><th></th><th>上游模型</th><th>上下文</th><th>绑定到</th></tr></thead>
+            <thead><tr><th><input type="checkbox" :checked="allFetchChecked" @change="toggleFetchAll"></th><th>上游模型</th><th>上下文</th><th>最大输出</th></tr></thead>
             <tbody>
-              <tr v-for="r in newRows" :key="r.upstream_id">
+              <tr v-for="r in newRows" :key="r.name">
                 <td><input type="checkbox" v-model="r.checked"></td>
-                <td class="mono">{{ r.upstream_id }}</td>
+                <td class="mono">{{ r.name }}</td>
                 <td>{{ r.context_length ?? '-' }}</td>
-                <td>
-                  <select v-model="r.target">
-                    <option value="__new__">＋新建：{{ r.suggested_name }}</option>
-                    <option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option>
-                  </select>
-                </td>
+                <td>{{ r.max_output_tokens ?? '-' }}</td>
               </tr>
               <tr v-if="!newRows.length"><td colspan="4" class="empty">无</td></tr>
             </tbody>
           </table>
         </details>
-        <details v-if="staleRows.length" open class="fetch-group">
-          <summary>已失效（{{ staleRows.length }}）</summary>
+        <details open class="fetch-group">
+          <summary>已有（{{ existingRows.length }}）</summary>
           <table>
-            <thead><tr><th>标准模型</th><th>上游模型名</th></tr></thead>
+            <thead><tr><th></th><th>上游模型</th><th>上下文</th><th>最大输出</th></tr></thead>
             <tbody>
-              <tr v-for="s in staleRows" :key="s.model_id + s.upstream_name">
-                <td class="mono">{{ s.name }}</td>
-                <td class="mono">{{ s.upstream_name }}</td>
+              <tr v-for="r in existingRows" :key="r.name">
+                <td><input type="checkbox" checked disabled></td>
+                <td class="mono">{{ r.name }}</td>
+                <td>{{ r.context_length ?? '-' }}</td>
+                <td>{{ r.max_output_tokens ?? '-' }}</td>
               </tr>
+              <tr v-if="!existingRows.length"><td colspan="4" class="empty">无</td></tr>
             </tbody>
           </table>
         </details>
         <div class="actions">
-          <button class="primary" @click="saveFetch">绑定选中项</button>
+          <button class="primary" @click="saveFetch">创建选中模型</button>
           <button @click="fetchDlg=null">取消</button>
         </div>
       </div>
@@ -350,37 +360,44 @@
       </div>
     </div>
 
-    <!-- ============ 绑定渠道弹窗 ============ -->
-    <div class="mask" v-if="boundDlg" @click.self="boundDlg=null">
-      <div class="card modal">
-        <h3>绑定渠道：{{ boundDlg.model }}</h3>
-        <table>
-          <thead><tr><th>渠道 ID</th><th>名称</th></tr></thead>
-          <tbody>
-            <tr v-for="c in boundDlg.channels" :key="c.id">
-              <td>{{ c.id }}</td>
-              <td>{{ c.name }}</td>
-            </tr>
-            <tr v-if="!boundDlg.channels.length"><td colspan="2" class="empty">未绑定任何渠道</td></tr>
-          </tbody>
-        </table>
-        <div class="actions"><button @click="boundDlg=null">关闭</button></div>
-      </div>
-    </div>
-
     <!-- ============ 模型编辑弹窗 ============ -->
     <div class="mask" v-if="modelForm" @click.self="modelForm=null">
       <div class="card modal">
         <h3>{{ modelForm.id ? '编辑模型' : '新建模型' }}</h3>
-        <label>标准名<input v-model="modelForm.name" placeholder="如 glm-5.3"></label>
-        <label>别名（每行一个，匹配大小写不敏感）
-          <textarea v-model="modelForm.aliasesText" rows="4" placeholder="GLM-5.3&#10;glm5.3"></textarea>
+        <label>所属渠道
+          <select v-model.number="modelForm.channel_id" :disabled="!!modelForm.id">
+            <option v-for="c in channels" :key="c.id" :value="c.id">{{ c.name }}</option>
+          </select>
         </label>
-        <label>上下文长度（可空）<input type="number" v-model.number="modelForm.context_length"></label>
-        <label>最大输出 tokens（可空）<input type="number" v-model.number="modelForm.max_output_tokens"></label>
+        <label>名称<input v-model="modelForm.name" placeholder="上游模型名，如 glm-5.3"></label>
         <div class="actions">
           <button class="primary" @click="saveModel">保存</button>
           <button @click="modelForm=null">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 模型映射编辑弹窗 ============ -->
+    <div class="mask" v-if="mappingForm" @click.self="mappingForm=null">
+      <div class="card modal">
+        <h3>{{ mappingForm.id ? '编辑模型映射' : '新建模型映射' }}</h3>
+        <label>标准名<input v-model="mappingForm.name" placeholder="对外暴露的标准模型名，如 glm-5.3"></label>
+        <label>上下文长度（可空）<input type="number" v-model.number="mappingForm.context_length"></label>
+        <label>最大输出 tokens（可空）<input type="number" v-model.number="mappingForm.max_output_tokens"></label>
+        <h4>绑定模型</h4>
+        <div class="check-groups">
+          <div v-for="g in mappingModelGroups" :key="g.channel" class="check-group">
+            <div class="check-group-name">{{ g.channel }}</div>
+            <label v-for="m in g.items" :key="m.id" class="check-item">
+              <input type="checkbox" v-model="mappingForm.model_ids" :value="m.id">
+              <span class="mono">{{ m.name }}</span>
+            </label>
+          </div>
+          <p v-if="!mappingModelGroups.length" class="dim">暂无模型实体，请先在渠道下创建模型</p>
+        </div>
+        <div class="actions">
+          <button class="primary" @click="saveMapping">保存</button>
+          <button @click="mappingForm=null">取消</button>
         </div>
       </div>
     </div>

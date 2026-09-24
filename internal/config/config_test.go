@@ -22,8 +22,8 @@ func chdir(t *testing.T, dir string) {
 func unsetenv(t *testing.T, keys ...string) {
 	t.Helper()
 	type saved struct {
-		v   string
-		ok  bool
+		v  string
+		ok bool
 	}
 	old := make(map[string]saved, len(keys))
 	for _, k := range keys {
@@ -51,7 +51,7 @@ func writeDotEnv(t *testing.T, dir, content string) {
 
 func TestParseFromDotEnv(t *testing.T) {
 	unsetenv(t, "PENG_ADMIN_PASSWORD", "PENG_ADDR", "PENG_DB", "PENG_LOG_RETENTION_DAYS",
-		"PENG_FAIL_THRESHOLD", "PENG_REQUEST_TIMEOUT", "PENG_CONNECT_TIMEOUT", "PENG_STREAM_FIRST_BYTE_TIMEOUT")
+		"PENG_REQUEST_TIMEOUT", "PENG_CONNECT_TIMEOUT", "PENG_STREAM_FIRST_BYTE_TIMEOUT")
 	dir := t.TempDir()
 	writeDotEnv(t, dir, `
 # comment line
@@ -81,7 +81,7 @@ PENG_LOG_RETENTION_DAYS=7
 
 func TestEnvOverridesDotEnv(t *testing.T) {
 	unsetenv(t, "PENG_ADDR", "PENG_DB", "PENG_LOG_RETENTION_DAYS",
-		"PENG_FAIL_THRESHOLD", "PENG_REQUEST_TIMEOUT", "PENG_CONNECT_TIMEOUT", "PENG_STREAM_FIRST_BYTE_TIMEOUT")
+		"PENG_REQUEST_TIMEOUT", "PENG_CONNECT_TIMEOUT", "PENG_STREAM_FIRST_BYTE_TIMEOUT")
 	t.Setenv("PENG_ADMIN_PASSWORD", "realpass")
 	dir := t.TempDir()
 	writeDotEnv(t, dir, "PENG_ADMIN_PASSWORD=filepass\n")
@@ -97,7 +97,7 @@ func TestEnvOverridesDotEnv(t *testing.T) {
 
 func TestFlagOverridesDotEnv(t *testing.T) {
 	unsetenv(t, "PENG_ADMIN_PASSWORD", "PENG_ADDR", "PENG_DB", "PENG_LOG_RETENTION_DAYS",
-		"PENG_FAIL_THRESHOLD", "PENG_REQUEST_TIMEOUT", "PENG_CONNECT_TIMEOUT", "PENG_STREAM_FIRST_BYTE_TIMEOUT")
+		"PENG_REQUEST_TIMEOUT", "PENG_CONNECT_TIMEOUT", "PENG_STREAM_FIRST_BYTE_TIMEOUT")
 	dir := t.TempDir()
 	writeDotEnv(t, dir, "PENG_ADMIN_PASSWORD=filepass\nPENG_ADDR=:9091\n")
 	chdir(t, dir)
@@ -126,7 +126,7 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.Addr != ":8080" || cfg.DBPath != "./peng.db" {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.LogRetentionDays != 30 || cfg.FailThreshold != 3 {
+	if cfg.LogRetentionDays != 30 {
 		t.Errorf("unexpected numeric defaults: %+v", cfg)
 	}
 	if cfg.RequestTimeout != 300*time.Second || cfg.ConnectTimeout != 10*time.Second || cfg.StreamFirstByteTimeout != 60*time.Second {

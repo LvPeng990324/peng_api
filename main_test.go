@@ -33,12 +33,12 @@ func TestEndToEnd(t *testing.T) {
 	defer st.Close()
 
 	cfg := config.Config{
-		Addr: ":0", AdminPassword: "pw", LogRetentionDays: 30, FailThreshold: 2,
+		Addr: ":0", AdminPassword: "pw", LogRetentionDays: 30,
 		RequestTimeout: 10 * time.Second, ConnectTimeout: 2 * time.Second,
 		StreamFirstByteTimeout: 2 * time.Second,
 	}
 	reg := provider.NewRegistry(provider.NewOpenAI(&http.Client{}, cfg.RequestTimeout, cfg.StreamFirstByteTimeout))
-	engine := relay.NewEngine(st, reg, cfg.FailThreshold)
+	engine := relay.NewEngine(st, reg)
 	sessions := auth.NewSessionStore(time.Hour)
 	adminH := admin.New(st, sessions, cfg.AdminPassword, reg)
 
@@ -46,18 +46,20 @@ func TestEndToEnd(t *testing.T) {
 	defer srv.Close()
 	ctx := context.Background()
 
-	// 数据准备
+	// 数据准备：渠道 → 模型实体 → 模型映射（标准名 glm-5.3）
 	cl := int64(131072)
-	m, _ := st.CreateModel(ctx, "glm-5.3", []string{"GLM5.3"}, &cl, nil)
 	ch, _ := st.CreateChannel(ctx, store.Channel{
 		Name: "up", Type: "openai", BaseURL: upstream.URL, APIKey: "k", Priority: 1,
 	})
-	st.BindModels(ctx, ch.ID, []store.BindingInput{{UpstreamModel: "", ModelID: &m.ID}})
+	m, _ := st.CreateModel(ctx, ch.ID, "glm-5.3")
+	if _, err := st.CreateMapping(ctx, "glm-5.3", &cl, nil, []int64{m.ID}); err != nil {
+		t.Fatalf("CreateMapping: %v", err)
+	}
 	tok, _ := st.CreateToken(ctx, "e2e")
 
-	// 1. 客户端：POST /v1/chat/completions（用别名）
+	// 1. 客户端：POST /v1/chat/completions（标准名精确匹配）
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions",
-		strings.NewReader(`{"model":"GLM5.3","messages":[{"role":"user","content":"ping"}]}`))
+		strings.NewReader(`{"model":"glm-5.3","messages":[{"role":"user","content":"ping"}]}`))
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

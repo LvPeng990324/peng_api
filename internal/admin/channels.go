@@ -22,10 +22,6 @@ type channelInput struct {
 	Priority  int    `json:"priority"`
 	Enabled   *bool  `json:"enabled"`
 	TestModel string `json:"test_model"`
-	Models    []struct {
-		ModelID       int64  `json:"model_id"`
-		UpstreamModel string `json:"upstream_model"`
-	} `json:"models"`
 }
 
 func (in channelInput) validate() string {
@@ -62,9 +58,6 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
 	ch := store.Channel{
 		Name: in.Name, Type: in.Type, BaseURL: in.BaseURL, APIKey: in.APIKey,
 		Priority: in.Priority, TestModel: in.TestModel,
-	}
-	for _, b := range in.Models {
-		ch.Models = append(ch.Models, store.ChannelModelBinding{ModelID: b.ModelID, UpstreamModel: b.UpstreamModel})
 	}
 	created, err := h.store.CreateChannel(r.Context(), ch)
 	if err != nil {
@@ -105,9 +98,6 @@ func (h *Handler) updateChannel(w http.ResponseWriter, r *http.Request) {
 		ID: id, Name: in.Name, Type: in.Type, BaseURL: in.BaseURL, APIKey: in.APIKey,
 		Priority: in.Priority, Enabled: enabled, TestModel: in.TestModel,
 	}
-	for _, b := range in.Models {
-		ch.Models = append(ch.Models, store.ChannelModelBinding{ModelID: b.ModelID, UpstreamModel: b.UpstreamModel})
-	}
 	if err := h.store.UpdateChannel(r.Context(), ch); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error: "+err.Error())
 		return
@@ -147,25 +137,11 @@ func (h *Handler) toggleChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *Handler) resetChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	if err := h.store.ResetChannelState(r.Context(), id); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
 type fetchModelsItem struct {
-	UpstreamID       string `json:"upstream_id"`
-	ContextLength    *int64 `json:"context_length"`
-	MaxOutputTokens  *int64 `json:"max_output_tokens"`
-	SuggestedModelID *int64 `json:"suggested_model_id"`
-	SuggestedName    string `json:"suggested_name"`
+	Name            string `json:"name"` // 上游模型名
+	ContextLength   *int64 `json:"context_length"`
+	MaxOutputTokens *int64 `json:"max_output_tokens"`
+	Exists          bool   `json:"exists"` // 是否已存在为该渠道下的模型实体
 }
 
 func (h *Handler) fetchModels(w http.ResponseWriter, r *http.Request) {
@@ -193,22 +169,28 @@ func (h *Handler) fetchModels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "fetch upstream models: "+err.Error())
 		return
 	}
+	// 本渠道已有的模型实体名集合，用于标记上游列表中哪些已存在
+	existing, err := h.store.ModelsOfChannel(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	exists := make(map[string]bool, len(existing))
+	for _, m := range existing {
+		exists[m.Name] = true
+	}
 	items := make([]fetchModelsItem, 0, len(models))
 	for _, m := range models {
-		item := fetchModelsItem{
-			UpstreamID: m.ID, ContextLength: m.ContextLength,
-			MaxOutputTokens: m.MaxOutputTokens, SuggestedName: m.ID,
-		}
-		if existing, err := h.store.ResolveModel(r.Context(), m.ID); err == nil && existing != nil {
-			item.SuggestedModelID = &existing.ID
-			item.SuggestedName = existing.Name
-		}
-		items = append(items, item)
+		items = append(items, fetchModelsItem{
+			Name: m.ID, ContextLength: m.ContextLength,
+			MaxOutputTokens: m.MaxOutputTokens, Exists: exists[m.ID],
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": items})
 }
 
-func (h *Handler) bindModels(w http.ResponseWriter, r *http.Request) {
+// addChannelModels 批量创建渠道下的模型实体：{names: [...]}，已存在的跳过（幂等）
+func (h *Handler) addChannelModels(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid id")
@@ -224,24 +206,26 @@ func (h *Handler) bindModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Bindings []store.BindingInput `json:"bindings"`
+		Names []string `json:"names"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	if len(in.Bindings) == 0 {
-		writeErr(w, http.StatusBadRequest, "bindings is empty")
+	if len(in.Names) == 0 {
+		writeErr(w, http.StatusBadRequest, "names is empty")
 		return
 	}
-	for _, b := range in.Bindings {
-		if b.UpstreamModel == "" {
-			writeErr(w, http.StatusBadRequest, "upstream_model is required")
+	for _, name := range in.Names {
+		if strings.TrimSpace(name) == "" {
+			writeErr(w, http.StatusBadRequest, "name must not be empty")
 			return
 		}
 	}
-	if err := h.store.BindModels(r.Context(), id, in.Bindings); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error: "+err.Error())
-		return
+	for _, name := range in.Names {
+		if _, err := h.store.CreateModel(r.Context(), id, name); err != nil {
+			writeErr(w, http.StatusInternalServerError, "internal error: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -262,7 +246,7 @@ func (h *Handler) testChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ch.TestModel == "" {
-		writeErr(w, http.StatusBadRequest, "test_model not configured: pick a cheap bound model first")
+		writeErr(w, http.StatusBadRequest, "test_model not configured: add a model entity first")
 		return
 	}
 	p, ok := h.providers.For(ch.Type)
