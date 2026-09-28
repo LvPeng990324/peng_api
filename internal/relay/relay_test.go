@@ -255,6 +255,55 @@ func TestEngineSuccessMappingAndEntityRename(t *testing.T) {
 	}
 }
 
+func TestEngineAgentHeaderAndUserAgentFallback(t *testing.T) {
+	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	})
+	defer up.close()
+
+	env := newTestEnv(t, 5*time.Second)
+	_, m := env.addModel(t, "ch", up.url(), 1, "m1")
+	env.addMapping(t, "m1", m.ID)
+
+	// X-Client-Name 优先
+	req, _ := http.NewRequest(http.MethodPost, env.client.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+env.tok.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Client-Name", "kimi-code")
+	req.Header.Set("User-Agent", "should-be-ignored/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+
+	// 无 X-Client-Name → 回落 User-Agent
+	req, _ = http.NewRequest(http.MethodPost, env.client.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m1","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+env.tok.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "curl/8.0")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readBody(t, resp)
+
+	logs, total, _ := env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
+	if total != 2 {
+		t.Fatalf("expected 2 logs, got %d", total)
+	}
+	byAgent := map[string]string{}
+	for _, l := range logs {
+		byAgent[l.Agent] = l.Status
+	}
+	if byAgent["kimi-code"] != "success" {
+		t.Errorf("X-Client-Name not recorded: %+v", logs)
+	}
+	if byAgent["curl/8.0"] != "success" {
+		t.Errorf("User-Agent fallback not recorded: %+v", logs)
+	}
+}
+
 func TestEngineModelNameCaseSensitive(t *testing.T) {
 	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {})
 	defer up.close()

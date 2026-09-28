@@ -30,6 +30,7 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 	mapping *store.Mapping, candidates []store.Candidate, body []byte, stream bool) {
 
 	requestID := newUUID()
+	agent := clientAgent(r)
 	var failures []string
 
 	for i, cand := range candidates {
@@ -48,7 +49,7 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 
 		entry := store.LogEntry{
 			RequestID: requestID, Attempt: i + 1,
-			TokenID: &tok.ID, TokenName: tok.Name,
+			TokenID: &tok.ID, TokenName: tok.Name, Agent: agent,
 			ModelRequested: mapping.Name, ModelCanonical: mapping.Name,
 			ChannelID: &cand.Channel.ID, ChannelName: cand.Channel.Name,
 			Stream: stream, RequestBody: string(reqBody),

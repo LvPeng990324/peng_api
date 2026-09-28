@@ -189,6 +189,7 @@
       <div class="bar">
         <div class="filters">
           <input v-model="logFilter.model" placeholder="模型（模糊）">
+          <input v-model="logFilter.agent" placeholder="Agent（模糊）">
           <select v-model="logFilter.status">
             <option value="">全部状态</option>
             <option value="success">success</option>
@@ -210,7 +211,7 @@
       <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>时间</th><th>模型</th><th>渠道</th><th>Token</th><th>状态</th><th>HTTP</th><th>耗时</th><th>tokens</th><th>操作</th>
+          <th>时间</th><th>模型</th><th>渠道</th><th>Token</th><th>Agent</th><th>状态</th><th>HTTP</th><th>耗时</th><th>tokens</th><th>操作</th>
         </tr></thead>
         <tbody>
           <tr v-for="l in logs.data" :key="l.id">
@@ -218,13 +219,14 @@
             <td class="mono">{{ l.model_requested }}<template v-if="l.model_canonical && l.model_canonical !== l.model_requested"> → {{ l.model_canonical }}</template></td>
             <td>{{ l.channel_name || '-' }}<span class="dim">#{{ l.attempt }}</span></td>
             <td>{{ l.token_name || '-' }}</td>
+            <td>{{ l.agent || '-' }}</td>
             <td><span class="tag" :class="l.status==='success' ? 'green' : 'red'">{{ l.status }}</span></td>
             <td>{{ l.http_status ?? '-' }}</td>
             <td>{{ l.latency_ms }}ms</td>
             <td>{{ l.prompt_tokens != null ? fmtTokens(l) : '-' }}</td>
             <td class="ops"><a @click="openLogDetail(l)">详情</a></td>
           </tr>
-          <tr v-if="!logs.data.length"><td colspan="9" class="empty">暂无日志</td></tr>
+          <tr v-if="!logs.data.length"><td colspan="10" class="empty">暂无日志</td></tr>
         </tbody>
       </table>
       </div>
@@ -427,6 +429,7 @@
           <p class="dim">
             HTTP {{ selAttempt.http_status ?? '-' }} · {{ selAttempt.latency_ms }}ms ·
             {{ selAttempt.stream ? '流式' : '非流式' }} · {{ fmtTime(selAttempt.created_at) }}
+            · agent {{ selAttempt.agent || '-' }}
             <template v-if="selAttempt.prompt_tokens != null"> · tokens {{ fmtTokens(selAttempt) }}</template>
           </p>
           <p class="err" v-if="selAttempt.error">{{ selAttempt.error }}</p>

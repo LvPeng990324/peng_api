@@ -493,6 +493,7 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 
 	base := LogEntry{
 		RequestID: "req-1", Attempt: 1, TokenName: "cline",
+		Agent: "kimi-code",
 		ModelRequested: "GLM5.3", ModelCanonical: "glm-5.3",
 		ChannelName: "zhipu", Status: "failed", Error: "upstream 500",
 		RequestBody: `{"model":"GLM5.3"}`, ResponseBody: `{"error":"boom"}`,
@@ -530,6 +531,9 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	if rows[0].PromptCacheHitTokens == nil || *rows[0].PromptCacheHitTokens != 8 {
 		t.Errorf("cache hit roundtrip: %+v", rows[0].PromptCacheHitTokens)
 	}
+	if rows[1].Agent != "kimi-code" {
+		t.Errorf("agent roundtrip: %q", rows[1].Agent)
+	}
 
 	// 状态筛选
 	rows, total, _ = s.ListLogs(ctx, LogFilter{Status: "failed", Page: 1, Size: 10})
@@ -555,6 +559,19 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	group, err := s.GetLogGroup(ctx, "req-1")
 	if err != nil || len(group) != 2 || group[0].Attempt != 1 || group[1].Attempt != 2 {
 		t.Fatalf("GetLogGroup: %v len=%d", err, len(group))
+	}
+	if group[0].Agent != "kimi-code" {
+		t.Errorf("agent in group: %q", group[0].Agent)
+	}
+
+	// agent 模糊筛选
+	_, total, _ = s.ListLogs(ctx, LogFilter{Agent: "kimi", Page: 1, Size: 10})
+	if total != 2 {
+		t.Errorf("agent filter fuzzy: total=%d", total)
+	}
+	_, total, _ = s.ListLogs(ctx, LogFilter{Agent: "cline", Page: 1, Size: 10})
+	if total != 0 {
+		t.Errorf("agent filter mismatch: total=%d", total)
 	}
 
 	// 清理：删 30 天前的 → 两条都还新，一条不删

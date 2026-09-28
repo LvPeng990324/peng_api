@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
   attempt INTEGER NOT NULL,
   token_id INTEGER,
   token_name TEXT NOT NULL DEFAULT '',
+  agent TEXT NOT NULL DEFAULT '',
   model_requested TEXT NOT NULL,
   model_canonical TEXT NOT NULL DEFAULT '',
   channel_id INTEGER,
@@ -117,6 +118,10 @@ func Open(path string) (*Store, error) {
 	}
 	// 旧库补列：CREATE TABLE IF NOT EXISTS 不会更新已存在的表
 	if err := ensureColumn(db, "request_logs", "prompt_cache_hit_tokens", "INTEGER"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "request_logs", "agent", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}

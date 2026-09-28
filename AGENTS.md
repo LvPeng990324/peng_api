@@ -37,6 +37,7 @@
 - **上游 4xx（除 429）不重试**，原样透传；5xx/429/网络错误/超时才降级到下一模型
 - **流式**：写出响应头后不再降级；客户端断开只记日志；日志 response_body 存拼接后的完整 SSE 文本
 - **DB 写日志用脱离请求 ctx 的 detached ctx（5s 超时）**，防止客户端断开丢日志
+- **日志 `agent` 字段**记录下游调用方：`X-Client-Name` 请求头优先，缺省回落 `User-Agent`
 - 客户端错误格式 `{"error":{"message","type","code"}}`；管理 API `{"error":"..."}`
 - 管理端 session 在内存中，重启失效是预期行为
 - 新增/修改管理 API 时同步改 `web/app.js` + `web/index.html`

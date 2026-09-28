@@ -39,7 +39,7 @@ createApp({
       mappings: [],
       tokens: [],
       logs: { data: [], total: 0, page: 1, size: 20 },
-      logFilter: { model: '', status: '', token_id: '', channel_id: '', start_time: '', end_time: '' },
+      logFilter: { model: '', status: '', agent: '', token_id: '', channel_id: '', start_time: '', end_time: '' },
       chForm: null,
       chModelsDlg: null,
       mappingModelsDlg: null,
@@ -178,6 +178,7 @@ createApp({
         const q = new URLSearchParams({ page: this.logs.page, size: this.logs.size });
         if (this.logFilter.model) q.set('model', this.logFilter.model);
         if (this.logFilter.status) q.set('status', this.logFilter.status);
+        if (this.logFilter.agent) q.set('agent', this.logFilter.agent);
         if (this.logFilter.token_id) q.set('token_id', this.logFilter.token_id);
         if (this.logFilter.channel_id) q.set('channel_id', this.logFilter.channel_id);
         if (this.logFilter.start_time) q.set('start_time', new Date(this.logFilter.start_time).toISOString());

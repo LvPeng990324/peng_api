@@ -15,6 +15,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	f := store.LogFilter{
 		Model:  q.Get("model"),
 		Status: q.Get("status"),
+		Agent:  q.Get("agent"),
 	}
 	f.Page, _ = strconv.Atoi(q.Get("page"))
 	f.Size, _ = strconv.Atoi(q.Get("size"))

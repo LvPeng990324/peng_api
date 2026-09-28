@@ -33,6 +33,14 @@ func newUUID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// clientAgent 识别下游调用方：X-Client-Name 主动声明优先，缺省回落 User-Agent
+func clientAgent(r *http.Request) string {
+	if name := strings.TrimSpace(r.Header.Get("X-Client-Name")); name != "" {
+		return name
+	}
+	return r.UserAgent()
+}
+
 type usage struct {
 	PromptTokens     int            `json:"prompt_tokens"`
 	CompletionTokens int            `json:"completion_tokens"`
