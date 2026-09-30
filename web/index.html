@@ -434,7 +434,11 @@
           </p>
           <p class="err" v-if="selAttempt.error">{{ selAttempt.error }}</p>
           <h4>请求体 <a class="td-link" @click="copyText(pretty(selAttempt.request_body))">复制</a></h4><pre>{{ pretty(selAttempt.request_body) }}</pre>
-          <h4>响应体 <a class="td-link" @click="copyText(pretty(selAttempt.response_body))">复制</a></h4><pre>{{ pretty(selAttempt.response_body) }}</pre>
+          <h4>响应体
+            <a class="td-link" @click="logDetail.viewRaw = !logDetail.viewRaw">{{ logDetail.viewRaw ? '查看拼接' : '查看原文' }}</a>
+            <a class="td-link" @click="copyText(logDetail.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body))">复制</a>
+          </h4>
+          <pre>{{ logDetail.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body) }}</pre>
         </template>
         <div class="actions"><button @click="logDetail=null">关闭</button></div>
       </div>
