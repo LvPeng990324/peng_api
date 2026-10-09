@@ -356,3 +356,15 @@ GET    /api/logs/{id}        详情：完整 request/response 原文 +
 - `go build` 可产出的完整单二进制代码
 - 简短 README（构建、启动参数、基本使用）
 - `AGENTS.md`：面向 AI agent 的项目文档（架构概述、目录结构、关键约定、开发/测试命令）。本项目由 agent 负责维护，代码或约定变更时必须同步更新该文件
+
+## 附录：前端架构变更（2026-10-09）
+
+`web/` 由「零构建步骤的手写 Vue3 全局版（vendor 引入 + app.js + style.css）」迁移为 **Vite + Vue 3 SFC + Ant Design Vue 4**：
+
+- 构建：`cd web && npm run build` 产出 `web/dist/`；`web/dist/` 不提交进 git（本地或线上打包时现场构建，线上用 `npm ci && npm run build`；`go:embed` 在 dist 缺失时编译报错，不会静默打进去旧产物），`web/node_modules/` 忽略
+- 按需引入：`unplugin-vue-components` + `AntDesignVueResolver({ importStyle: 'css-in-js' })`（antdv 4 是 CSS-in-JS，无独立 css 文件；`css-in-js` 引 `es/xxx/style` 入口），模板直接用 `<a-xxx>`；`Modal.confirm` / `message` 等编程式调用无需额外引样式（样式随渲染自动生成）
+- 中文：`a-config-provider` 挂 `ant-design-vue/es/locale/zh_CN`，`dayjs/locale/zh-cn`
+- 交互：原生 `confirm()` / 手写 toast 改为 `Modal.confirm` / `message`
+- 嵌入：`web/embed.go` 用 `//go:embed all:dist`，`/` 与未命中路径 SPA fallback 返回 `dist/index.html`（`/api/*`、`/v1/*` 由 chi 精确路由优先匹配，fallback 中对未命中 API 路径返回 404）；`favicon.svg` 经 `web/public/` 原样拷入 dist
+- Go 运行时行为不变：CGO=0、单二进制、`/v1` 与管理 API 端点/格式均不变
+- dev 体验：`npm run dev` 起 Vite（HMR），`/api` 代理到 `http://localhost:8080`

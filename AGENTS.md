@@ -9,6 +9,7 @@
 ## 常用命令
 
 - 构建：`go build -o peng_api .`
+- 前端构建：`cd web && npm run build`（`web/dist/` 不进 git，go build 前先构建；线上打包用 `npm ci && npm run build`；`npm run dev` 起 Vite 开发服务器，`/api` 代理到 :8080）
 - 测试：`go test ./...`（转发路径改动后加 `-race` 跑一遍）
 - 运行：`./peng_api`（配置见 `.env`，可复制 `.env.example`；也可用 `-admin-password` 等 flag 或 `PENG_*` 环境变量）
 - 静态检查：`go vet ./...`
@@ -22,7 +23,7 @@
 - `internal/relay/provider` — 上游协议抽象；新增协议（如 anthropic）在此实现 `Provider` 接口并注册进 `main.go` 的 Registry
 - `internal/auth` — Bearer 中间件 + 管理端 session
 - `internal/admin` — 管理 API（按资源分文件）
-- `web/` — Vue3 SPA（无构建步骤，vendor 内嵌）；`embed.go` 负责静态路由
+- `web/` — Vue3 SPA（Vite 工程：Vue 3 SFC + Ant Design Vue 4 按需引入）；`npm run build` 产出 `dist/` 并由 `embed.go` 经 `//go:embed all:dist` 打进二进制；`dist/` 不提交进 git（本地/线上构建时生成），`node_modules/` 忽略
 
 ## 关键约定（改了会破坏东西的地方）
 
@@ -40,7 +41,7 @@
 - **日志 `agent` 字段**记录下游调用方：`X-Client-Name` 请求头优先，缺省回落 `User-Agent`
 - 客户端错误格式 `{"error":{"message","type","code"}}`；管理 API `{"error":"..."}`
 - 管理端 session 在内存中，重启失效是预期行为
-- 新增/修改管理 API 时同步改 `web/app.js` + `web/index.html`
+- 新增/修改管理 API 时同步改 `web/src/` 下对应页面（views/）与 `web/src/api.js`、`web/src/store.js`
 - **上游协议扩展**：实现 `provider.Provider` 接口（Chat/ListModels），在 main.go 注册；对下游永远暴露 OpenAI 格式
 
 ## 测试约定

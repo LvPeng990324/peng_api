@@ -4,3 +4,5 @@ peng.db
 peng.db-*
 /tmp/
 .env
+web/node_modules/
+web/dist/
