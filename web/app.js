@@ -196,10 +196,10 @@ createApp({
       if (c) {
         this.chForm = {
           id: c.id, name: c.name, base_url: c.base_url, api_key: c.api_key,
-          priority: c.priority, enabled: c.enabled, test_model: c.test_model,
+          priority: c.priority, enabled: c.enabled, test_model: c.test_model, remark: c.remark,
         };
       } else {
-        this.chForm = { name: '', base_url: '', api_key: '', priority: 0, enabled: true, test_model: '' };
+        this.chForm = { name: '', base_url: '', api_key: '', priority: 0, enabled: true, test_model: '', remark: '' };
       }
     },
     async saveChannel() {
@@ -207,7 +207,7 @@ createApp({
         const f = this.chForm;
         const body = {
           name: f.name, base_url: f.base_url, api_key: f.api_key,
-          priority: f.priority, enabled: f.enabled, test_model: f.test_model,
+          priority: f.priority, enabled: f.enabled, test_model: f.test_model, remark: f.remark,
         };
         if (f.id) await api('/channels/' + f.id, { method: 'PUT', body });
         else await api('/channels', { method: 'POST', body });

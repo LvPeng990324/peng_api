@@ -77,7 +77,10 @@
         <tbody>
           <tr v-for="c in sortedChannels" :key="c.id">
             <td>{{ c.id }}</td>
-            <td>{{ c.name }}</td>
+            <td>
+              {{ c.name }}
+              <div v-if="c.remark" class="ch-remark">{{ c.remark }}</div>
+            </td>
             <td class="mono wrap">{{ c.base_url }}</td>
             <td>{{ c.priority }}</td>
             <td><a class="td-link" @click="showChannelModels(c)">{{ channelModels(c).length }}</a></td>
@@ -251,6 +254,7 @@
             <option v-for="opt in testModelOptions" :key="opt" :value="opt">{{ opt }}</option>
           </select>
         </label>
+        <label>备注<input v-model="chForm.remark" placeholder="选填，如用途、供应商说明"></label>
         <label class="row"><input type="checkbox" v-model="chForm.enabled"> 启用</label>
         <div class="actions">
           <button class="primary" @click="saveChannel">保存</button>

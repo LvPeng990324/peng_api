@@ -22,6 +22,7 @@ type channelInput struct {
 	Priority  int    `json:"priority"`
 	Enabled   *bool  `json:"enabled"`
 	TestModel string `json:"test_model"`
+	Remark    string `json:"remark"`
 }
 
 func (in channelInput) validate() string {
@@ -57,7 +58,7 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	ch := store.Channel{
 		Name: in.Name, Type: in.Type, BaseURL: in.BaseURL, APIKey: in.APIKey,
-		Priority: in.Priority, TestModel: in.TestModel,
+		Priority: in.Priority, TestModel: in.TestModel, Remark: in.Remark,
 	}
 	created, err := h.store.CreateChannel(r.Context(), ch)
 	if err != nil {
@@ -96,7 +97,7 @@ func (h *Handler) updateChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	ch := store.Channel{
 		ID: id, Name: in.Name, Type: in.Type, BaseURL: in.BaseURL, APIKey: in.APIKey,
-		Priority: in.Priority, Enabled: enabled, TestModel: in.TestModel,
+		Priority: in.Priority, Enabled: enabled, TestModel: in.TestModel, Remark: in.Remark,
 	}
 	if err := h.store.UpdateChannel(r.Context(), ch); err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal error: "+err.Error())

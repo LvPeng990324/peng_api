@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS channels (
   priority INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
   test_model TEXT NOT NULL DEFAULT '',
+  remark TEXT NOT NULL DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS models (
@@ -117,6 +118,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	// 旧库补列：CREATE TABLE IF NOT EXISTS 不会更新已存在的表
+	if err := ensureColumn(db, "channels", "remark", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := ensureColumn(db, "request_logs", "prompt_cache_hit_tokens", "INTEGER"); err != nil {
 		db.Close()
 		return nil, err
