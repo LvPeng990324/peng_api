@@ -34,7 +34,7 @@
     <template #bodyCell="{ column, record: l }">
       <template v-if="column.key === 'created_at'">{{ fmtTime(l.created_at) }}</template>
       <template v-else-if="column.key === 'model'">
-        <span class="mono">
+        <span class="mono model-cell" :title="l.model_requested + (l.model_canonical && l.model_canonical !== l.model_requested ? ' → ' + l.model_canonical : '')">
           {{ l.model_requested }}<template v-if="l.model_canonical && l.model_canonical !== l.model_requested"> → {{ l.model_canonical }}</template>
         </span>
       </template>
@@ -107,7 +107,7 @@ import { fmtTime, fmtTokens, pretty, sseText } from '../utils'
 
 const columns = [
   { title: '时间', key: 'created_at', width: 170 },
-  { title: '模型', key: 'model' },
+  { title: '模型', key: 'model', width: 220 },
   { title: '渠道', key: 'channel', width: 130 },
   { title: 'Token', key: 'token_name', width: 100 },
   { title: 'Agent', key: 'agent', width: 110 },
