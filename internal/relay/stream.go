@@ -5,23 +5,28 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"time"
 
 	"pengapi/internal/store"
 )
 
 // 透传上游 SSE 到客户端，累积全文；结束后落日志。
 // 写出响应头后无法降级：客户端断开/上游断流都只影响日志，不再尝试下一模型。
-func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntry) {
+func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntry, start time.Time) {
 	defer src.Close()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
+	// 落日志前统一回填总耗时（流结束/中断/客户端断开都算）
+	finish := func() { entry.LatencyMS = time.Since(start).Milliseconds() }
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		entry.Status = "failed"
 		entry.Error = "streaming unsupported by response writer"
+		finish()
 		e.insertLog(entry)
 		return
 	}
@@ -36,6 +41,7 @@ func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *s
 				entry.Status = "failed"
 				entry.Error = "client disconnected: " + werr.Error()
 				entry.ResponseBody = acc.String()
+				finish()
 				e.insertLog(entry)
 				return
 			}
@@ -43,6 +49,7 @@ func (e *Engine) finishStream(w http.ResponseWriter, src io.ReadCloser, entry *s
 			acc.Write(line)
 		}
 		if err != nil {
+			finish()
 			if err == io.EOF {
 				entry.Status = "success"
 				entry.ResponseBody = acc.String()

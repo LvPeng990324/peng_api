@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
   completion_tokens INTEGER,
   prompt_cache_hit_tokens INTEGER,
   latency_ms INTEGER NOT NULL DEFAULT 0,
+  first_byte_ms INTEGER NOT NULL DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_logs_created ON request_logs(created_at DESC);
@@ -127,6 +128,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := ensureColumn(db, "request_logs", "agent", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "request_logs", "first_byte_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		db.Close()
 		return nil, err
 	}

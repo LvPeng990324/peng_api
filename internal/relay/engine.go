@@ -84,7 +84,10 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 		// 成功
 		if res.HTTPStatus >= 200 && res.HTTPStatus < 300 {
 			if stream {
-				e.finishStream(w, res.Stream, &entry)
+				// p.Chat 返回即收到上游响应头，此刻的耗时即首字耗时；
+				// 总耗时由 finishStream 在流结束后回填到 LatencyMS
+				entry.FirstByteMS = entry.LatencyMS
+				e.finishStream(w, res.Stream, &entry, start)
 				return
 			}
 			ct := res.Header.Get("Content-Type")

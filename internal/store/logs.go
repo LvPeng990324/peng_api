@@ -28,6 +28,7 @@ type LogEntry struct {
 	CompletionTokens     *int      `json:"completion_tokens"`
 	PromptCacheHitTokens *int      `json:"prompt_cache_hit_tokens"`
 	LatencyMS        int64     `json:"latency_ms"`
+	FirstByteMS      int64     `json:"first_byte_ms"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -39,11 +40,11 @@ func (s *Store) InsertLog(ctx context.Context, e LogEntry) (int64, error) {
 		INSERT INTO request_logs
 		(request_id, attempt, token_id, token_name, agent, model_requested, model_canonical,
 		 channel_id, channel_name, stream, status, http_status, error,
-		 request_body, response_body, prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.RequestID, e.Attempt, e.TokenID, e.TokenName, e.Agent, e.ModelRequested, e.ModelCanonical,
-		e.ChannelID, e.ChannelName, e.Stream, e.Status, e.HTTPStatus, e.Error,
-		e.RequestBody, e.ResponseBody, e.PromptTokens, e.CompletionTokens, e.PromptCacheHitTokens, e.LatencyMS, e.CreatedAt)
+		 request_body, response_body, prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, first_byte_ms, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 e.RequestID, e.Attempt, e.TokenID, e.TokenName, e.Agent, e.ModelRequested, e.ModelCanonical,
+		 e.ChannelID, e.ChannelName, e.Stream, e.Status, e.HTTPStatus, e.Error,
+		 e.RequestBody, e.ResponseBody, e.PromptTokens, e.CompletionTokens, e.PromptCacheHitTokens, e.LatencyMS, e.FirstByteMS, e.CreatedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -115,7 +116,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 	}
 	q := `SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical,
 		channel_id, channel_name, stream, status, http_status, error,
-		prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at
+		prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, first_byte_ms, created_at
 		FROM request_logs` + where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, q, append(args, f.Size, (f.Page-1)*f.Size)...)
 	if err != nil {
@@ -137,7 +138,7 @@ func (s *Store) GetLog(ctx context.Context, id int64) (*LogEntry, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical,
 		       channel_id, channel_name, stream, status, http_status, error, request_body, response_body,
-		       prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at
+		       prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, first_byte_ms, created_at
 		FROM request_logs WHERE id=?`, id)
 	e, err := scanLog(row)
 	if err == sql.ErrNoRows {
@@ -150,7 +151,7 @@ func (s *Store) GetLogGroup(ctx context.Context, requestID string) ([]LogEntry, 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical,
 		       channel_id, channel_name, stream, status, http_status, error, request_body, response_body,
-		       prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, created_at
+		       prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, first_byte_ms, created_at
 		FROM request_logs WHERE request_id=? ORDER BY attempt ASC`, requestID)
 	if err != nil {
 		return nil, err
@@ -187,7 +188,7 @@ func scanLogList(row logScanner) (*LogEntry, error) {
 	err := row.Scan(&e.ID, &e.RequestID, &e.Attempt, &tokenID, &e.TokenName, &e.Agent,
 		&e.ModelRequested, &e.ModelCanonical, &channelID, &e.ChannelName, &e.Stream,
 		&e.Status, &httpStatus, &e.Error,
-		&promptTokens, &completionTokens, &cacheHit, &e.LatencyMS, &e.CreatedAt)
+		&promptTokens, &completionTokens, &cacheHit, &e.LatencyMS, &e.FirstByteMS, &e.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +224,7 @@ func scanLog(row logScanner) (*LogEntry, error) {
 	err := row.Scan(&e.ID, &e.RequestID, &e.Attempt, &tokenID, &e.TokenName, &e.Agent,
 		&e.ModelRequested, &e.ModelCanonical, &channelID, &e.ChannelName, &e.Stream,
 		&e.Status, &httpStatus, &e.Error, &e.RequestBody, &e.ResponseBody,
-		&promptTokens, &completionTokens, &cacheHit, &e.LatencyMS, &e.CreatedAt)
+		&promptTokens, &completionTokens, &cacheHit, &e.LatencyMS, &e.FirstByteMS, &e.CreatedAt)
 	if err != nil {
 		return nil, err
 	}

@@ -47,9 +47,19 @@
         <a-tag :color="l.status === 'success' ? 'success' : 'error'">{{ l.status }}</a-tag>
       </template>
       <template v-else-if="column.key === 'http_status'">{{ l.http_status ?? '-' }}</template>
-      <template v-else-if="column.key === 'latency_ms'">{{ l.latency_ms }}ms</template>
+      <template v-else-if="column.key === 'latency_ms'">
+        <div class="latency-cell">
+          <div v-if="l.first_byte_ms > 0">首字 {{ fmtDur(l.first_byte_ms) }}</div>
+          <div>耗时 {{ fmtDur(l.latency_ms) }}</div>
+          <div v-if="tokSpeed(l)">速度 {{ tokSpeed(l) }}</div>
+        </div>
+      </template>
       <template v-else-if="column.key === 'tokens'">
-        {{ l.prompt_tokens != null ? fmtTokens(l) : '-' }}
+        <div v-if="l.prompt_tokens != null" class="tokens-cell">
+          <div>{{ fmtPromptLine(l) }}</div>
+          <div>{{ l.completion_tokens ?? '-' }}</div>
+        </div>
+        <template v-else>-</template>
       </template>
       <template v-else-if="column.key === 'ops'">
         <a @click="openLogDetail(l)">详情</a>
@@ -79,10 +89,11 @@
     </a-radio-group>
     <template v-if="selAttempt">
       <p class="logs-detail-meta">
-        HTTP {{ selAttempt.http_status ?? '-' }} · {{ selAttempt.latency_ms }}ms ·
+        HTTP {{ selAttempt.http_status ?? '-' }} · 耗时 {{ fmtDur(selAttempt.latency_ms) }}<template v-if="selAttempt.first_byte_ms > 0"> · 首字 {{ fmtDur(selAttempt.first_byte_ms) }}</template> ·
         {{ selAttempt.stream ? '流式' : '非流式' }} · {{ fmtTime(selAttempt.created_at) }}
         · agent {{ selAttempt.agent || '-' }}
         <template v-if="selAttempt.prompt_tokens != null"> · tokens {{ fmtTokens(selAttempt) }}</template>
+        <template v-if="tokSpeed(selAttempt)"> · 速度 {{ tokSpeed(selAttempt) }}</template>
       </p>
       <p v-if="selAttempt.error" class="err">{{ selAttempt.error }}</p>
       <h4>请求体 <a class="td-link" @click="copyText(pretty(selAttempt.request_body))">复制</a></h4>
@@ -142,6 +153,32 @@ function searchLogs() {
   loadLogs()
 }
 
+// ---- 耗时/速度 ----
+function fmtDur(ms) {
+  if (ms == null) return '-'
+  if (ms >= 1000) {
+    const s = ms / 1000
+    const r = s >= 100 ? Math.round(s) : Math.round(s * 10) / 10
+    return r + 's'
+  }
+  return ms + 'ms'
+}
+
+// 速度 = 输出 tokens / 总耗时(s)
+function tokSpeed(l) {
+  if (l.completion_tokens == null || !l.latency_ms) return ''
+  const tps = Math.round(l.completion_tokens / (l.latency_ms / 1000))
+  return tps > 0 ? tps + 't/s' : ''
+}
+
+// 输入行：命中缓存+未命中=总输入；无缓存数据时只显示总输入
+function fmtPromptLine(l) {
+  const p = l.prompt_tokens
+  const hit = l.prompt_cache_hit_tokens
+  if (hit != null && hit > 0 && p != null) return `${hit}+${p - hit}=${p}`
+  return String(p ?? '-')
+}
+
 // ---- 详情 ----
 const logDetailOpen = ref(false)
 const logDetail = reactive({ data: null, attempts: [], sel: null, viewRaw: false })
@@ -173,3 +210,12 @@ async function copyText(text) {
 
 onMounted(loadLogs)
 </script>
+
+<style scoped>
+.latency-cell,
+.tokens-cell {
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+</style>

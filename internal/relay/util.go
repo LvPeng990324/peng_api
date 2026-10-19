@@ -79,11 +79,22 @@ func (u *usage) cacheHit() *int {
 func parseUsage(body []byte) (prompt, completion, cacheHit *int) {
 	var v struct {
 		Usage *usage `json:"usage"`
+		// 部分上游（如 kimi 系）把 usage 放在 choices[0] 里而非顶层
+		Choices []struct {
+			Usage *usage `json:"usage"`
+		} `json:"choices"`
 	}
-	if json.Unmarshal(body, &v) != nil || v.Usage == nil {
+	if json.Unmarshal(body, &v) != nil {
 		return nil, nil, nil
 	}
-	return &v.Usage.PromptTokens, &v.Usage.CompletionTokens, v.Usage.cacheHit()
+	u := v.Usage
+	if u == nil && len(v.Choices) > 0 {
+		u = v.Choices[0].Usage
+	}
+	if u == nil {
+		return nil, nil, nil
+	}
+	return &u.PromptTokens, &u.CompletionTokens, u.cacheHit()
 }
 
 func parseUsageSSE(text string) (prompt, completion, cacheHit *int) {

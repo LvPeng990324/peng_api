@@ -571,7 +571,7 @@ func TestFinishStreamUpstreamInterrupt(t *testing.T) {
 	src := io.NopCloser(&failAfterReader{data: []byte("data: partial\n\n")})
 	entry := &store.LogEntry{RequestID: "r1", Attempt: 1, Status: "success", Stream: true}
 	rec := httptest.NewRecorder()
-	e.finishStream(rec, src, entry)
+	e.finishStream(rec, src, entry, time.Now().Add(-50*time.Millisecond))
 
 	if entry.Status != "failed" || !strings.Contains(entry.Error, "stream interrupted") {
 		t.Errorf("entry: %+v", entry)
@@ -613,7 +613,7 @@ func TestFinishStreamClientDisconnect(t *testing.T) {
 
 	src := io.NopCloser(strings.NewReader("data: a\n\ndata: b\n\n"))
 	entry := &store.LogEntry{RequestID: "r2", Attempt: 1, Stream: true}
-	e.finishStream(&brokenWriter{header: http.Header{}}, src, entry)
+	e.finishStream(&brokenWriter{header: http.Header{}}, src, entry, time.Now().Add(-50*time.Millisecond))
 
 	if entry.Status != "failed" || !strings.Contains(entry.Error, "client disconnected") {
 		t.Errorf("entry: %+v", entry)
