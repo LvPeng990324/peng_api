@@ -56,8 +56,9 @@
       </template>
       <template v-else-if="column.key === 'tokens'">
         <div v-if="l.prompt_tokens != null" class="tokens-cell">
-          <div>{{ fmtPromptLine(l) }}</div>
-          <div>{{ l.completion_tokens ?? '-' }}</div>
+          <div>输入 {{ fmtPromptLine(l) }}</div>
+          <div v-if="cacheRate(l)">命中 {{ cacheRate(l) }}%</div>
+          <div>输出 {{ l.completion_tokens ?? '-' }}</div>
         </div>
         <template v-else>-</template>
       </template>
@@ -125,7 +126,7 @@ const columns = [
   { title: '状态', key: 'status', width: 90 },
   { title: 'HTTP', key: 'http_status', width: 70 },
   { title: '耗时', key: 'latency_ms', width: 90 },
-  { title: 'tokens', key: 'tokens', width: 100 },
+  { title: 'tokens', key: 'tokens', width: 150 },
   { title: '操作', key: 'ops', width: 70 },
 ]
 
@@ -177,6 +178,14 @@ function fmtPromptLine(l) {
   const hit = l.prompt_cache_hit_tokens
   if (hit != null && hit > 0 && p != null) return `${hit}+${p - hit}=${p}`
   return String(p ?? '-')
+}
+
+// 缓存命中率 = 命中缓存 token / 输入总 token * 100%，保留两位小数
+function cacheRate(l) {
+  const p = l.prompt_tokens
+  const hit = l.prompt_cache_hit_tokens
+  if (hit == null || hit <= 0 || !p) return ''
+  return ((hit / p) * 100).toFixed(2)
 }
 
 // ---- 详情 ----
