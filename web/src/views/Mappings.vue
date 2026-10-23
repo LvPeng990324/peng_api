@@ -37,7 +37,13 @@
       <a-form-item label="绑定模型">
         <div v-for="g in mappingModelGroups" :key="g.channel" style="margin-bottom: 8px">
           <div class="dim" style="margin-bottom: 4px">{{ g.channel }}</div>
-          <a-checkbox-group v-model:value="mappingForm.model_ids" :options="g.options" />
+          <a-checkbox
+            v-for="opt in g.options"
+            :key="opt.value"
+            :checked="mappingForm.model_ids.includes(opt.value)"
+            :style="{ marginRight: '8px' }"
+            @change="toggleModelId(opt.value)"
+          >{{ opt.label }}</a-checkbox>
         </div>
         <p v-if="!mappingModelGroups.length" class="dim">暂无模型实体，请先在渠道下创建模型</p>
       </a-form-item>
@@ -92,6 +98,12 @@ const mappingModelGroups = computed(() => {
 
 const mappingFormOpen = ref(false)
 const mappingForm = reactive({ id: null, name: '', context_length: null, max_output_tokens: null, model_ids: [] })
+
+function toggleModelId(id) {
+  const i = mappingForm.model_ids.indexOf(id)
+  if (i === -1) mappingForm.model_ids.push(id)
+  else mappingForm.model_ids.splice(i, 1)
+}
 
 function openMappingForm(m) {
   if (m) {
