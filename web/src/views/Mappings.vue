@@ -23,7 +23,7 @@
   </a-table>
 
   <!-- 编辑弹窗 -->
-  <a-modal v-model:open="mappingFormOpen" :title="mappingForm.id ? '编辑模型映射' : '新建模型映射'" @ok="saveMapping">
+  <a-modal v-model:open="mappingFormOpen" :title="mappingForm.id ? '编辑模型映射' : '新建模型映射'" :confirm-loading="mappingSaving" @ok="saveMapping">
     <a-form layout="vertical">
       <a-form-item label="标准名">
         <a-input v-model:value="mappingForm.name" placeholder="对外暴露的标准模型名，如 glm-5.3" />
@@ -98,6 +98,7 @@ const mappingModelGroups = computed(() => {
 
 const mappingFormOpen = ref(false)
 const mappingForm = reactive({ id: null, name: '', context_length: null, max_output_tokens: null, model_ids: [] })
+const mappingSaving = ref(false)
 
 function toggleModelId(id) {
   const i = mappingForm.model_ids.indexOf(id)
@@ -119,19 +120,24 @@ function openMappingForm(m) {
 }
 
 async function saveMapping() {
-  await guard(async () => {
-    const f = mappingForm
-    const body = {
-      name: f.name,
-      context_length: f.context_length || null,
-      max_output_tokens: f.max_output_tokens || null,
-      model_ids: f.model_ids,
-    }
-    if (f.id) await api('/mappings/' + f.id, { method: 'PUT', body })
-    else await api('/mappings', { method: 'POST', body })
-    mappingFormOpen.value = false
-    await Promise.all([loadMappings(), loadModels()])
-  })
+  mappingSaving.value = true
+  try {
+    await guard(async () => {
+      const f = mappingForm
+      const body = {
+        name: f.name,
+        context_length: f.context_length || null,
+        max_output_tokens: f.max_output_tokens || null,
+        model_ids: f.model_ids,
+      }
+      if (f.id) await api('/mappings/' + f.id, { method: 'PUT', body })
+      else await api('/mappings', { method: 'POST', body })
+      mappingFormOpen.value = false
+      await Promise.all([loadMappings(), loadModels()])
+    })
+  } finally {
+    mappingSaving.value = false
+  }
 }
 
 function delMapping(m) {

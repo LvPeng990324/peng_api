@@ -21,7 +21,7 @@
     </template>
   </a-table>
 
-  <a-modal v-model:open="modelFormOpen" :title="modelForm.id ? '编辑模型' : '新建模型'" @ok="saveModel">
+  <a-modal v-model:open="modelFormOpen" :title="modelForm.id ? '编辑模型' : '新建模型'" :confirm-loading="modelSaving" @ok="saveModel">
     <a-form layout="vertical">
       <a-form-item label="所属渠道">
         <a-select v-model:value="modelForm.channel_id" :disabled="!!modelForm.id">
@@ -54,6 +54,7 @@ const columns = [
 
 const modelFormOpen = ref(false)
 const modelForm = reactive({ id: null, channel_id: null, name: '' })
+const modelSaving = ref(false)
 
 function openModelForm(m) {
   if (m) {
@@ -65,15 +66,20 @@ function openModelForm(m) {
 }
 
 async function saveModel() {
-  await guard(async () => {
-    if (modelForm.id) {
-      await api('/models/' + modelForm.id, { method: 'PUT', body: { name: modelForm.name } })
-    } else {
-      await api('/models', { method: 'POST', body: { channel_id: modelForm.channel_id, name: modelForm.name } })
-    }
-    modelFormOpen.value = false
-    await loadModels()
-  })
+  modelSaving.value = true
+  try {
+    await guard(async () => {
+      if (modelForm.id) {
+        await api('/models/' + modelForm.id, { method: 'PUT', body: { name: modelForm.name } })
+      } else {
+        await api('/models', { method: 'POST', body: { channel_id: modelForm.channel_id, name: modelForm.name } })
+      }
+      modelFormOpen.value = false
+      await loadModels()
+    })
+  } finally {
+    modelSaving.value = false
+  }
 }
 
 function delModel(m) {

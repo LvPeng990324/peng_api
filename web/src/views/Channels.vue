@@ -33,7 +33,7 @@
   </a-table>
 
   <!-- 渠道编辑弹窗 -->
-  <a-modal v-model:open="chFormOpen" :title="chForm.id ? '编辑渠道' : '新建渠道'" @ok="saveChannel">
+  <a-modal v-model:open="chFormOpen" :title="chForm.id ? '编辑渠道' : '新建渠道'" :confirm-loading="chSaving" @ok="saveChannel">
     <a-form layout="vertical">
       <a-form-item label="名称"><a-input v-model:value="chForm.name" /></a-form-item>
       <a-form-item label="上游地址（base_url）">
@@ -65,6 +65,8 @@
 
   <!-- 获取模型弹窗 -->
   <a-modal v-model:open="fetchDlgOpen" :title="'获取到的上游模型：' + fetchDlg.channelName" width="860px" :footer="null">
+    <a-spin :spinning="fetchDlg.loading" style="display: block; min-height: 160px">
+    <template v-if="fetchDlg.loaded">
     <p class="dim">勾选要创建为模型实体的上游模型（「可增加」组默认勾选）。「已有」项已是该渠道的模型实体，仅作展示。</p>
     <a-input v-model:value="fetchDlg.filter" placeholder="按模型名筛选…" style="margin-bottom: 14px" />
 
@@ -86,9 +88,11 @@
     </a-table>
 
     <div style="margin-top: 18px; display: flex; gap: 10px">
-      <a-button type="primary" @click="saveFetch">创建选中模型</a-button>
+      <a-button type="primary" :loading="fetchSaving" @click="saveFetch">创建选中模型</a-button>
       <a-button @click="fetchDlgOpen = false">取消</a-button>
     </div>
+    </template>
+    </a-spin>
   </a-modal>
 
   <!-- 测试结果弹窗 -->
@@ -161,17 +165,24 @@ function openChannelForm(c) {
   chFormOpen.value = true
 }
 
+const chSaving = ref(false)
+
 async function saveChannel() {
-  await guard(async () => {
-    const body = {
-      name: chForm.name, base_url: chForm.base_url, api_key: chForm.api_key,
-      priority: chForm.priority, enabled: chForm.enabled, test_model: chForm.test_model, remark: chForm.remark,
-    }
-    if (chForm.id) await api('/channels/' + chForm.id, { method: 'PUT', body })
-    else await api('/channels', { method: 'POST', body })
-    chFormOpen.value = false
-    await loadChannels()
-  })
+  chSaving.value = true
+  try {
+    await guard(async () => {
+      const body = {
+        name: chForm.name, base_url: chForm.base_url, api_key: chForm.api_key,
+        priority: chForm.priority, enabled: chForm.enabled, test_model: chForm.test_model, remark: chForm.remark,
+      }
+      if (chForm.id) await api('/channels/' + chForm.id, { method: 'PUT', body })
+      else await api('/channels', { method: 'POST', body })
+      chFormOpen.value = false
+      await loadChannels()
+    })
+  } finally {
+    chSaving.value = false
+  }
 }
 
 function delChannel(c) {
@@ -208,7 +219,8 @@ function showChannelModels(c) {
 
 // ---- 获取模型 ----
 const fetchDlgOpen = ref(false)
-const fetchDlg = reactive({ channelID: null, channelName: '', filter: '', rows: [] })
+const fetchDlg = reactive({ channelID: null, channelName: '', filter: '', rows: [], loading: false, loaded: false })
+const fetchSaving = ref(false)
 
 const fetchRows = computed(() => {
   const q = (fetchDlg.filter || '').trim().toLowerCase()
@@ -219,11 +231,10 @@ const existingRows = computed(() => fetchRows.value.filter(r => r.category === '
 const newRows = computed(() => fetchRows.value.filter(r => r.category === 'new'))
 
 async function fetchModels(c) {
+  Object.assign(fetchDlg, { channelID: c.id, channelName: c.name, filter: '', rows: [], loading: true, loaded: false })
+  fetchDlgOpen.value = true
   await guard(async () => {
     const v = await api('/channels/' + c.id + '/fetch-models', { method: 'POST' })
-    fetchDlg.channelID = c.id
-    fetchDlg.channelName = c.name
-    fetchDlg.filter = ''
     fetchDlg.rows = (v.data || []).map(r => ({
       checked: !r.exists,
       category: r.exists ? 'existing' : 'new',
@@ -231,17 +242,27 @@ async function fetchModels(c) {
       context_length: r.context_length,
       max_output_tokens: r.max_output_tokens,
     }))
-    fetchDlgOpen.value = true
+    fetchDlg.loaded = true
   })
+  fetchDlg.loading = false
+  if (!fetchDlg.loaded) fetchDlgOpen.value = false // 失败已由 guard 提示
 }
 
 async function saveFetch() {
   await guard(async () => {
     const names = fetchDlg.rows.filter(r => r.checked && r.category === 'new').map(r => r.name)
-    fetchDlgOpen.value = false
-    if (!names.length) return
-    await api('/channels/' + fetchDlg.channelID + '/models', { method: 'POST', body: { names } })
-    await Promise.all([loadChannels(), loadModels()])
+    if (!names.length) {
+      fetchDlgOpen.value = false
+      return
+    }
+    fetchSaving.value = true
+    try {
+      await api('/channels/' + fetchDlg.channelID + '/models', { method: 'POST', body: { names } })
+      fetchDlgOpen.value = false
+      await Promise.all([loadChannels(), loadModels()])
+    } finally {
+      fetchSaving.value = false
+    }
   })
 }
 

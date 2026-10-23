@@ -26,11 +26,11 @@
       <a-date-picker v-model:value="logFilter.end_time" show-time placeholder="结束时间" style="width: 190px" />
     </a-form-item>
     <a-form-item>
-      <a-button type="primary" html-type="submit" @click="searchLogs">查询</a-button>
+      <a-button type="primary" html-type="submit" :loading="logsLoading" @click="searchLogs">查询</a-button>
     </a-form-item>
   </a-form>
 
-  <a-table :scroll="{ x: 'max-content' }" :data-source="logs.data" :columns="columns" row-key="id" :pagination="false" size="middle">
+  <a-table :scroll="{ x: 'max-content' }" :data-source="logs.data" :columns="columns" row-key="id" :pagination="false" size="middle" :loading="logsLoading">
     <template #bodyCell="{ column, record: l }">
       <template v-if="column.key === 'created_at'">{{ fmtTime(l.created_at) }}</template>
       <template v-else-if="column.key === 'model'">
@@ -80,8 +80,9 @@
   <!-- 详情弹窗 -->
   <a-modal v-model:open="logDetailOpen" width="860px" :footer="null">
     <template #title>
-      请求详情 <span class="dim mono">{{ logDetail.data.request_id }}</span>
+      请求详情 <span class="dim mono">{{ logDetail.data?.request_id }}</span>
     </template>
+    <a-spin :spinning="logDetailLoading" style="display: block; min-height: 160px">
     <a-radio-group v-model:value="logDetail.sel" style="margin-bottom: 10px">
       <a-radio-button v-for="a in logDetail.attempts" :key="a.id" :value="a.id">
         第{{ a.attempt }}次 {{ a.channel_name }}
@@ -106,6 +107,7 @@
       </h4>
       <pre>{{ logDetail.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body) }}</pre>
     </template>
+    </a-spin>
   </a-modal>
 </div>
 </template>
@@ -132,21 +134,27 @@ const columns = [
 
 const logs = reactive({ data: [], total: 0, page: 1, size: 20 })
 const logFilter = reactive({ model: '', status: '', agent: '', token_id: '', channel_id: '', start_time: null, end_time: null })
+const logsLoading = ref(false)
 
 async function loadLogs() {
-  await guard(async () => {
-    const q = new URLSearchParams({ page: logs.page, size: logs.size })
-    if (logFilter.model) q.set('model', logFilter.model)
-    if (logFilter.status) q.set('status', logFilter.status)
-    if (logFilter.agent) q.set('agent', logFilter.agent)
-    if (logFilter.token_id) q.set('token_id', logFilter.token_id)
-    if (logFilter.channel_id) q.set('channel_id', logFilter.channel_id)
-    if (logFilter.start_time) q.set('start_time', logFilter.start_time.toISOString())
-    if (logFilter.end_time) q.set('end_time', logFilter.end_time.toISOString())
-    const v = await api('/logs?' + q)
-    logs.data = v.data || []
-    logs.total = v.total
-  })
+  logsLoading.value = true
+  try {
+    await guard(async () => {
+      const q = new URLSearchParams({ page: logs.page, size: logs.size })
+      if (logFilter.model) q.set('model', logFilter.model)
+      if (logFilter.status) q.set('status', logFilter.status)
+      if (logFilter.agent) q.set('agent', logFilter.agent)
+      if (logFilter.token_id) q.set('token_id', logFilter.token_id)
+      if (logFilter.channel_id) q.set('channel_id', logFilter.channel_id)
+      if (logFilter.start_time) q.set('start_time', logFilter.start_time.toISOString())
+      if (logFilter.end_time) q.set('end_time', logFilter.end_time.toISOString())
+      const v = await api('/logs?' + q)
+      logs.data = v.data || []
+      logs.total = v.total
+    })
+  } finally {
+    logsLoading.value = false
+  }
 }
 
 function searchLogs() {
@@ -191,6 +199,7 @@ function cacheRate(l) {
 // ---- 详情 ----
 const logDetailOpen = ref(false)
 const logDetail = reactive({ data: null, attempts: [], sel: null, viewRaw: false })
+const logDetailLoading = ref(false)
 
 const selAttempt = computed(() => {
   if (!logDetail.data) return null
@@ -198,14 +207,20 @@ const selAttempt = computed(() => {
 })
 
 async function openLogDetail(l) {
+  logDetail.data = null
+  logDetail.attempts = []
+  logDetail.sel = null
+  logDetailLoading.value = true
+  logDetailOpen.value = true
   await guard(async () => {
     const v = await api('/logs/' + l.id)
     logDetail.data = v.data
     logDetail.attempts = v.attempts || [v.data]
     logDetail.sel = v.data.id
     logDetail.viewRaw = false
-    logDetailOpen.value = true
   })
+  logDetailLoading.value = false
+  if (!logDetail.data) logDetailOpen.value = false // 失败已由 guard 提示
 }
 
 async function copyText(text) {

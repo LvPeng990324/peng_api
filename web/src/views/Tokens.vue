@@ -3,7 +3,7 @@
   <div class="page-bar">
     <a-space>
       <a-input v-model:value="newTokenName" placeholder="名称（如 cline）" style="width: 200px" @keyup.enter="createToken" />
-      <a-button type="primary" @click="createToken">新建 Token</a-button>
+      <a-button type="primary" :loading="creatingToken" @click="createToken">新建 Token</a-button>
     </a-space>
     <span />
   </div>
@@ -55,18 +55,24 @@ const columns = [
 ]
 
 const newTokenName = ref('')
+const creatingToken = ref(false)
 const createdTokenOpen = ref(false)
 const createdToken = reactive({ token: '' })
 
 async function createToken() {
   if (!newTokenName.value.trim()) return
-  await guard(async () => {
-    const v = await api('/tokens', { method: 'POST', body: { name: newTokenName.value.trim() } })
-    createdToken.token = v.token
-    createdTokenOpen.value = true
-    newTokenName.value = ''
-    await loadTokens()
-  })
+  creatingToken.value = true
+  try {
+    await guard(async () => {
+      const v = await api('/tokens', { method: 'POST', body: { name: newTokenName.value.trim() } })
+      createdToken.token = v.token
+      createdTokenOpen.value = true
+      newTokenName.value = ''
+      await loadTokens()
+    })
+  } finally {
+    creatingToken.value = false
+  }
 }
 
 async function toggleToken(t) {
