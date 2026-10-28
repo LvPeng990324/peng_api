@@ -17,10 +17,11 @@ type Handler struct {
 	sessions      *auth.SessionStore
 	adminPassword string
 	providers     *provider.Registry
+	quotas        *quotaService
 }
 
 func New(st *store.Store, ss *auth.SessionStore, adminPassword string, reg *provider.Registry) *Handler {
-	return &Handler{store: st, sessions: ss, adminPassword: adminPassword, providers: reg}
+	return &Handler{store: st, sessions: ss, adminPassword: adminPassword, providers: reg, quotas: newQuotaService()}
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
@@ -54,6 +55,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 				r.Post("/", h.createChannel)
 				r.Put("/{id}", h.updateChannel)
 				r.Delete("/{id}", h.deleteChannel)
+				r.Get("/{id}/quota", h.getChannelQuota)
 				r.Post("/{id}/toggle", h.toggleChannel)
 				r.Post("/{id}/fetch-models", h.fetchModels)
 				r.Post("/{id}/models", h.addChannelModels)

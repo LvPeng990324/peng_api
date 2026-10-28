@@ -46,6 +46,39 @@ func TestOpenIdempotent(t *testing.T) {
 	s2.Close()
 }
 
+func TestOpenAddsQuotaTypeToExistingChannels(t *testing.T) {
+	path := t.TempDir() + "/existing.db"
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE channels (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+		type TEXT NOT NULL DEFAULT 'openai', base_url TEXT NOT NULL, api_key TEXT NOT NULL,
+		priority INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1,
+		test_model TEXT NOT NULL DEFAULT '', remark TEXT NOT NULL DEFAULT '',
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO channels (name, base_url, api_key) VALUES ('old', 'http://x', 'k')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	channels, err := s.ListChannels(context.Background())
+	if err != nil || len(channels) != 1 || channels[0].QuotaType != "" {
+		t.Fatalf("migrated channels: %v %+v", err, channels)
+	}
+}
+
 // 旧库（渠道↔标准模型↔别名结构）打开后四张表 DROP 重建，tokens/request_logs 保留
 func TestOpenDropsLegacySchema(t *testing.T) {
 	path := t.TempDir() + "/legacy.db"
@@ -203,7 +236,7 @@ func TestChannelCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	ch, err := s.CreateChannel(ctx, Channel{
-		Name: "zhipu", Type: "openai", BaseURL: "https://api.bigmodel.cn/coding/paas/v4",
+		Name: "zhipu", Type: "openai", QuotaType: "openrouter", BaseURL: "https://api.bigmodel.cn/coding/paas/v4",
 		APIKey: "key1", Priority: 10, TestModel: "glm-5.3-free",
 	})
 	if err != nil {
@@ -214,18 +247,22 @@ func TestChannelCRUD(t *testing.T) {
 	if err != nil || got == nil {
 		t.Fatalf("GetChannel: %v", err)
 	}
-	if got.Name != "zhipu" || got.Priority != 10 || !got.Enabled || got.TestModel != "glm-5.3-free" {
+	if got.Name != "zhipu" || got.Priority != 10 || !got.Enabled || got.TestModel != "glm-5.3-free" || got.QuotaType != "openrouter" {
 		t.Errorf("unexpected channel: %+v", got)
+	}
+	list, err := s.ListChannels(ctx)
+	if err != nil || len(list) != 1 || list[0].QuotaType != "openrouter" {
+		t.Errorf("ListChannels quota_type: %v %+v", err, list)
 	}
 
 	if err := s.UpdateChannel(ctx, Channel{
-		ID: ch.ID, Name: "zhipu2", Type: "openai", BaseURL: got.BaseURL, APIKey: "key2",
+		ID: ch.ID, Name: "zhipu2", Type: "openai", QuotaType: "kimi", BaseURL: got.BaseURL, APIKey: "key2",
 		Priority: 5, Enabled: true, TestModel: "m2",
 	}); err != nil {
 		t.Fatalf("UpdateChannel: %v", err)
 	}
 	got3, _ := s.GetChannel(ctx, ch.ID)
-	if got3.Name != "zhipu2" || got3.APIKey != "key2" || got3.Priority != 5 {
+	if got3.Name != "zhipu2" || got3.APIKey != "key2" || got3.Priority != 5 || got3.QuotaType != "kimi" {
 		t.Errorf("update lost fields: %+v", got3)
 	}
 
@@ -493,7 +530,7 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 
 	base := LogEntry{
 		RequestID: "req-1", Attempt: 1, TokenName: "cline",
-		Agent: "kimi-code",
+		Agent:          "kimi-code",
 		ModelRequested: "GLM5.3", ModelCanonical: "glm-5.3",
 		ChannelName: "zhipu", Status: "failed", Error: "upstream 500",
 		RequestBody: `{"model":"GLM5.3"}`, ResponseBody: `{"error":"boom"}`,

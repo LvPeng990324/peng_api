@@ -11,6 +11,20 @@
         {{ c.name }}
         <div v-if="c.remark" class="ch-remark">{{ c.remark }}</div>
       </template>
+      <div v-else-if="column.key === 'quota'" class="quota-cell">
+        <span v-if="!c.quota_type">-</span>
+        <span v-else-if="c.quota_loading" class="dim">加载中…</span>
+        <span v-else-if="c.quota_error" class="err" :title="c.quota_error">获取失败</span>
+        <template v-else-if="c.quota">
+          <span v-if="c.quota_type === 'openrouter'">剩余：{{ c.quota.remaining ?? '-' }}</span>
+          <span v-else-if="c.quota_type === 'deepseek'">余额：{{ c.quota.balance ?? '-' }}</span>
+          <div v-else-if="c.quota_type === 'kimi'">
+            <div>5h：{{ formatPercent(c.quota.five_hour) }}</div>
+            <div>7d：{{ formatPercent(c.quota.weekly) }}</div>
+          </div>
+        </template>
+        <span v-else>-</span>
+      </div>
       <template v-else-if="column.key === 'base_url'">
         <span class="mono wrap">{{ c.base_url }}</span>
       </template>
@@ -40,6 +54,14 @@
         <a-input v-model:value="chForm.base_url" placeholder="https://api.example.com/v1" />
       </a-form-item>
       <a-form-item label="API Key"><a-input v-model:value="chForm.api_key" /></a-form-item>
+      <a-form-item label="额度类型">
+        <a-select v-model:value="chForm.quota_type">
+          <a-select-option value="">无</a-select-option>
+          <a-select-option value="openrouter">OpenRouter</a-select-option>
+          <a-select-option value="kimi">Kimi</a-select-option>
+          <a-select-option value="deepseek">DeepSeek</a-select-option>
+        </a-select>
+      </a-form-item>
       <a-form-item label="优先级（越大越优先）">
         <a-input-number v-model:value="chForm.priority" :min="0" style="width: 100%" />
       </a-form-item>
@@ -127,6 +149,7 @@ import { pretty } from '../utils'
 const columns = [
   { title: 'ID', dataIndex: 'id', width: 60 },
   { title: '名称', dataIndex: 'name', key: 'name' },
+  { title: '额度', key: 'quota', width: 110 },
   { title: '地址', key: 'base_url' },
   { title: '优先级', dataIndex: 'priority', width: 80 },
   { title: '模型数', key: 'models', width: 80 },
@@ -145,9 +168,14 @@ const fetchColumns = [
 ]
 const fetchColumnsExisting = fetchColumns.filter(c => c.key !== 'checked')
 
+function formatPercent(value) {
+  if (value === null || value === undefined) return '-'
+  return Number(value.toFixed(2)) + '%'
+}
+
 // ---- 渠道编辑 ----
 const chFormOpen = ref(false)
-const chForm = reactive({ id: null, name: '', base_url: '', api_key: '', priority: 0, enabled: true, test_model: '', remark: '' })
+const chForm = reactive({ id: null, name: '', base_url: '', api_key: '', quota_type: '', priority: 0, enabled: true, test_model: '', remark: '' })
 const testModelOptions = computed(() => {
   if (!chForm.id) return []
   return store.models.filter(m => m.channel_id === chForm.id).map(m => m.name)
@@ -156,11 +184,11 @@ const testModelOptions = computed(() => {
 function openChannelForm(c) {
   if (c) {
     Object.assign(chForm, {
-      id: c.id, name: c.name, base_url: c.base_url, api_key: c.api_key,
+      id: c.id, name: c.name, base_url: c.base_url, api_key: c.api_key, quota_type: c.quota_type || '',
       priority: c.priority, enabled: c.enabled, test_model: c.test_model, remark: c.remark,
     })
   } else {
-    Object.assign(chForm, { id: null, name: '', base_url: '', api_key: '', priority: 0, enabled: true, test_model: '', remark: '' })
+    Object.assign(chForm, { id: null, name: '', base_url: '', api_key: '', quota_type: '', priority: 0, enabled: true, test_model: '', remark: '' })
   }
   chFormOpen.value = true
 }
@@ -172,7 +200,7 @@ async function saveChannel() {
   try {
     await guard(async () => {
       const body = {
-        name: chForm.name, base_url: chForm.base_url, api_key: chForm.api_key,
+        name: chForm.name, base_url: chForm.base_url, api_key: chForm.api_key, quota_type: chForm.quota_type,
         priority: chForm.priority, enabled: chForm.enabled, test_model: chForm.test_model, remark: chForm.remark,
       }
       if (chForm.id) await api('/channels/' + chForm.id, { method: 'PUT', body })
@@ -285,3 +313,11 @@ async function testChannel(c) {
 
 onMounted(loadChannels)
 </script>
+
+<style scoped>
+.quota-cell {
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+</style>

@@ -20,6 +20,7 @@ import (
 
 type adminEnv struct {
 	st     *store.Store
+	h      *Handler
 	srv    *httptest.Server
 	cookie *http.Cookie // 已登录的 session cookie
 }
@@ -38,7 +39,7 @@ func newAdminEnv(t *testing.T) *adminEnv {
 	h.RegisterRoutes(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
-	env := &adminEnv{st: st, srv: srv}
+	env := &adminEnv{st: st, h: h, srv: srv}
 	env.cookie = env.login(t, "testpass")
 	return env
 }

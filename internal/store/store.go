@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS channels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'openai',
+  quota_type TEXT NOT NULL DEFAULT '',
   base_url TEXT NOT NULL,
   api_key TEXT NOT NULL,
   priority INTEGER NOT NULL DEFAULT 0,
@@ -119,6 +120,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	// 旧库补列：CREATE TABLE IF NOT EXISTS 不会更新已存在的表
+	if err := ensureColumn(db, "channels", "quota_type", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := ensureColumn(db, "channels", "remark", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err

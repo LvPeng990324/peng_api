@@ -32,6 +32,7 @@
 - **时间戳一律 Go 端写 UTC**（time.Now().UTC()），不依赖 DB DEFAULT；扫描 DATETIME 列进 time.Time
 - **sql.DB 必须 SetMaxOpenConns(1)**（单写者 + :memory: 测试安全）
 - **数据模型是三级结构**：`channels 1─n models(模型实体) n─n model_mappings(标准名)`；渠道只与模型实体关联，标准名只与模型实体关联
+- **渠道协议与额度类型分离**：`channels.type` 是转发协议；`channels.quota_type` 是额度查询类型（空/openrouter/kimi/deepseek）。额度通过 `GET /api/channels/{id}/quota` 实时查询，不落库；预设接口见 `internal/admin/quotas.go`
 - **请求匹配**：客户端 model 与标准名大小写敏感精确匹配（无别名）→ 展开绑定的模型实体，按渠道 priority DESC、模型 id ASC 逐个尝试
 - **模型可用性 = 渠道 enabled 动态推导**（JOIN channels 查询时过滤），不落库；无渠道自动禁用、无连续失败统计，只有手动启停
 - **发往上游的 model 字段总是被替换**为模型实体的 name（上游真实模型名）

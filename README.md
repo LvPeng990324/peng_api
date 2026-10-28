@@ -25,7 +25,7 @@ go build -o peng_api .
 ## 快速上手
 
 1. 启动后用浏览器打开 http://localhost:8080 ，输入管理密码登录
-2. 「渠道」页：新建渠道（地址、key、优先级），用「获取模型」从上游拉取并添加模型实体；给渠道选一个便宜的测试模型后可用「测试」按钮验证连通性
+2. 「渠道」页：新建渠道（地址、key、优先级），可选 OpenRouter、Kimi 或 DeepSeek 额度类型以在列表显示额度；用「获取模型」从上游拉取并添加模型实体；给渠道选一个便宜的测试模型后可用「测试」按钮验证连通性
 3. 「模型映射」页：新建标准名（如 glm-5.3，可带 context_length/max_output_tokens），绑定一个或多个渠道下的模型实体
 4. 「Token」页：创建客户端 token
 5. 客户端（任意 OpenAI 兼容工具）配置：base_url = http://localhost:8080/v1 ，api_key = 上一步的 token

@@ -17,6 +17,7 @@ import (
 type channelInput struct {
 	Name      string `json:"name"`
 	Type      string `json:"type"`
+	QuotaType string `json:"quota_type"`
 	BaseURL   string `json:"base_url"`
 	APIKey    string `json:"api_key"`
 	Priority  int    `json:"priority"`
@@ -34,6 +35,11 @@ func (in channelInput) validate() string {
 	}
 	if strings.TrimSpace(in.APIKey) == "" {
 		return "api_key is required"
+	}
+	switch in.QuotaType {
+	case "", "openrouter", "kimi", "deepseek":
+	default:
+		return "invalid quota_type"
 	}
 	return ""
 }
@@ -57,7 +63,7 @@ func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ch := store.Channel{
-		Name: in.Name, Type: in.Type, BaseURL: in.BaseURL, APIKey: in.APIKey,
+		Name: in.Name, Type: in.Type, QuotaType: in.QuotaType, BaseURL: in.BaseURL, APIKey: in.APIKey,
 		Priority: in.Priority, TestModel: in.TestModel, Remark: in.Remark,
 	}
 	created, err := h.store.CreateChannel(r.Context(), ch)
@@ -96,7 +102,7 @@ func (h *Handler) updateChannel(w http.ResponseWriter, r *http.Request) {
 		enabled = *in.Enabled
 	}
 	ch := store.Channel{
-		ID: id, Name: in.Name, Type: in.Type, BaseURL: in.BaseURL, APIKey: in.APIKey,
+		ID: id, Name: in.Name, Type: in.Type, QuotaType: in.QuotaType, BaseURL: in.BaseURL, APIKey: in.APIKey,
 		Priority: in.Priority, Enabled: enabled, TestModel: in.TestModel, Remark: in.Remark,
 	}
 	if err := h.store.UpdateChannel(r.Context(), ch); err != nil {

@@ -38,8 +38,27 @@ export async function guard(fn) {
   }
 }
 
+export async function loadChannelQuotas() {
+  const channels = store.channels.filter(c => c.quota_type)
+  await Promise.all(channels.map(async c => {
+    c.quota = null
+    c.quota_error = ''
+    c.quota_loading = true
+    try {
+      c.quota = (await api('/channels/' + c.id + '/quota')).data || null
+    } catch (e) {
+      c.quota_error = e.message
+    } finally {
+      c.quota_loading = false
+    }
+  }))
+}
+
 export async function loadChannels() {
-  await guard(async () => { store.channels = (await api('/channels')).data || [] })
+  await guard(async () => {
+    store.channels = (await api('/channels')).data || []
+    await loadChannelQuotas()
+  })
 }
 export async function loadModels() {
   await guard(async () => { store.models = (await api('/models')).data || [] })
@@ -59,4 +78,5 @@ export async function loadAll() {
   store.models = m.data || []
   store.mappings = mp.data || []
   store.tokens = tk.data || []
+  await loadChannelQuotas()
 }

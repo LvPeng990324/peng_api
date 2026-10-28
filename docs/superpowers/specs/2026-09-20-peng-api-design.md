@@ -13,7 +13,8 @@
 
 - 统一 `POST /v1/chat/completions` 入口（含 SSE 流式），`GET /v1/models` 聚合模型列表（带 context_length）
 - 多个命名 Bearer token 鉴权，日志记录来源 token
-- 渠道管理：上游地址 / key / 优先级 / 启停；渠道是模型实体的容器，不与其它实体直接关联
+- 渠道管理：上游地址 / key / 优先级 / 启停 / 额度类型；渠道是模型实体的容器，不与其它实体直接关联
+- 渠道额度查询：OpenRouter 免费次数、Kimi Code 的 5 小时 / 每周额度剩余百分比、DeepSeek 账户余额，在渠道表格实时展示
 - 模型实体：挂在渠道下，只有上游模型名；可用性完全跟随渠道（渠道禁用 → 其模型不可被请求到）
 - 模型映射（标准名）：请求入口，大小写敏感精确匹配；与模型实体多对多绑定，未绑定模型的标准名无法被请求到；模型参数（context_length / max_output_tokens）在标准名侧
 - 失败按优先级依次降级重试；只保留手动启停，无自动禁用
@@ -88,11 +89,13 @@ CREATE TABLE channels (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'openai',      -- 上游协议类型，本期固定 openai
+  quota_type TEXT NOT NULL DEFAULT '',      -- 额度查询类型：空 / openrouter / kimi / deepseek
   base_url TEXT NOT NULL,                   -- 如 https://api.bigmodel.cn/coding/paas/v4
   api_key TEXT NOT NULL,
   priority INTEGER NOT NULL DEFAULT 0,      -- 数字越大越优先
   enabled INTEGER NOT NULL DEFAULT 1,       -- 手动启停（唯一开关，无自动禁用）
   test_model TEXT NOT NULL DEFAULT '',      -- 连通性测试用的上游模型名
+  remark TEXT NOT NULL DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -255,6 +258,15 @@ CREATE INDEX idx_logs_request ON request_logs(request_id);
 - 未配置 test_model → 报错提示先选测试模型
 ```
 
+### 5.8 渠道额度查询
+
+- `quota_type` 与转发协议 `type` 独立；空值不查询，表格显示 `-`。
+- 前端在渠道加载后并发调用 `GET /api/channels/{id}/quota`，单个渠道失败只在该行显示错误。
+- OpenRouter：`GET https://openrouter.ai/api/v1/auth/key`，Bearer 使用渠道 API Key；解析 `data.free_model_daily_requests` 的 `used/limit/remaining`，表格显示剩余次数。
+- Kimi Code：`GET https://api.kimi.com/coding/v1/usages`；解析 `usages.limit_5h/limit_7d.used_ratio`，显示 `(1-used_ratio)*100` 的剩余百分比。兼容旧版 `limits`（5h）和 `usage`（7d）计数字段；缺失窗口显示 `-`，页面不展示总额度。
+- DeepSeek：`GET https://api.deepseek.com/user/balance`，Bearer 使用渠道 API Key；取首个 `balance_infos.total_balance`，表格显示 `余额：N`，不展示币种和可用状态。
+- 额度响应不落库，不写请求日志；固定预设地址，不使用渠道 `base_url`。
+
 ## 6. 接口定义
 
 ### 6.1 客户端 API（Bearer token 鉴权）
@@ -274,9 +286,10 @@ POST   /api/logout
 GET    /api/me               校验 session 是否有效
 
 GET    /api/channels         渠道列表（无绑定/健康状态字段）
-POST   /api/channels         {name, type, base_url, api_key, priority, test_model, enabled}
+POST   /api/channels         {name, type, quota_type, base_url, api_key, priority, test_model, enabled}
 PUT    /api/channels/{id}    同上，整体更新
 DELETE /api/channels/{id}    旗下模型实体级联删除
+GET    /api/channels/{id}/quota           实时查询渠道额度
 POST   /api/channels/{id}/toggle        {enabled: true|false}
 POST   /api/channels/{id}/fetch-models  拉取上游模型列表（含 exists 标记，不落库）
 POST   /api/channels/{id}/models        {names: [...]} 批量创建模型实体（幂等）
@@ -320,7 +333,7 @@ GET    /api/logs/{id}        详情：完整 request/response 原文 +
 
 登录页 + 单页 SPA 五个标签页：
 
-- **渠道**：渠道列表（名称、地址、优先级、模型数、状态、启停）、新建/编辑（连接信息 + priority + test_model）、获取模型弹窗（勾选创建模型实体）、测试弹窗
+- **渠道**：渠道列表（名称、额度、地址、优先级、模型数、状态、启停）、新建/编辑（连接信息 + quota_type + priority + test_model）、获取模型弹窗（勾选创建模型实体）、测试弹窗
 - **模型**：模型实体列表（名称、所属渠道、绑定标准名）、新建（选渠道 + 名称）/改名/删除
 - **模型映射**：标准名列表（标准名、context_length、max_output_tokens、绑定模型数）、新建/编辑（参数 + 按渠道分组的模型多选绑定）/删除
 - **Token**：token 列表、新建（完整值仅此一次显示）、启停、删除
