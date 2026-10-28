@@ -1,10 +1,10 @@
 # AGENTS.md — peng_api
 
-面向 AI agent 的项目说明。**修改代码后必须同步更新本文件**（以及 `docs/superpowers/specs/` 里的设计文档，若涉及设计变更）。
+面向 AI agent 的项目说明。**修改代码、架构或约定后必须同步更新本文件**；详细实现以代码为准，不再另维护重复的设计文档。
 
 ## 项目是什么
 
-自用 LLM API 分发网关：多上游渠道 → 统一 OpenAI 格式 `/v1` 出口。Go 单二进制 + SQLite。详细设计见 `docs/superpowers/specs/2026-09-20-peng-api-design.md`。
+自用 LLM API 分发网关：多上游渠道 → 统一 OpenAI 格式 `/v1` 出口。Go 单二进制 + SQLite，按优先级分发、失败降级，记录完整请求日志。
 
 ## 常用命令
 
@@ -23,25 +23,29 @@
 - `internal/relay/provider` — 上游协议抽象；新增协议（如 anthropic）在此实现 `Provider` 接口并注册进 `main.go` 的 Registry
 - `internal/auth` — Bearer 中间件 + 管理端 session
 - `internal/admin` — 管理 API（按资源分文件）
-- `web/` — Vue3 SPA（Vite 工程：Vue 3 SFC + Ant Design Vue 4 按需引入）；`npm run build` 产出 `dist/` 并由 `embed.go` 经 `//go:embed all:dist` 打进二进制；`dist/` 不提交进 git（本地/线上构建时生成），`node_modules/` 忽略
+- `web/` — Vue3 SPA（Vite 工程：Vue 3 SFC + Ant Design Vue 4 按需引入）；`npm run build` 产出 `dist/` 并由 `embed.go` 经 `//go:embed all:dist` 打进二进制；`dist/` 不提交进 git（本地/线上构建时生成），`node_modules/` 忽略；非 API 未命中路径回退 `index.html`
 
 ## 关键约定（改了会破坏东西的地方）
 
+- **HTTP 入口边界**：`/v1/*` 是 Bearer token 鉴权的客户端 API，`/api/*` 是 session 鉴权的管理 API（login 除外），`/` 是静态 SPA
 - **CGO 必须为 0**：SQLite 只用 modernc.org/sqlite，不引入任何 CGO 依赖
 - **请求路径禁止 panic**：错误显式处理；chi Recoverer 兜底
 - **时间戳一律 Go 端写 UTC**（time.Now().UTC()），不依赖 DB DEFAULT；扫描 DATETIME 列进 time.Time
 - **sql.DB 必须 SetMaxOpenConns(1)**（单写者 + :memory: 测试安全）
-- **数据模型是三级结构**：`channels 1─n models(模型实体) n─n model_mappings(标准名)`；渠道只与模型实体关联，标准名只与模型实体关联
+- **旧库迁移**：检测到 `model_aliases` 时 DROP 重建 `models/model_aliases/channel_models/channels`，保留 tokens/request_logs；普通新增列用 `ensureColumn` 幂等补列
+- **数据模型是三级结构**：`channels 1─n models(模型实体) n─n model_mappings(标准名)`；渠道只与模型实体关联，标准名只与模型实体关联；context_length/max_output_tokens 参数放在标准名侧
 - **渠道协议与额度类型分离**：`channels.type` 是转发协议；`channels.quota_type` 是额度查询类型（空/openrouter/kimi/deepseek）。额度通过 `GET /api/channels/{id}/quota` 实时查询，不落库；预设接口见 `internal/admin/quotas.go`
-- **请求匹配**：客户端 model 与标准名大小写敏感精确匹配（无别名）→ 展开绑定的模型实体，按渠道 priority DESC、模型 id ASC 逐个尝试
+- **请求匹配**：客户端 model 与标准名大小写敏感精确匹配（无别名），未命中返回 404 → 展开绑定的模型实体，按渠道 priority DESC、模型 id ASC 逐个尝试；无可用模型返回 503
 - **模型可用性 = 渠道 enabled 动态推导**（JOIN channels 查询时过滤），不落库；无渠道自动禁用、无连续失败统计，只有手动启停
+- **`GET /v1/models`**：只返回至少绑定一个可用模型实体的标准名，OpenAI 格式附带标准名侧参数（NULL 省略）
 - **发往上游的 model 字段总是被替换**为模型实体的 name（上游真实模型名）
 - **上游 4xx（除 429）不重试**，原样透传；5xx/429/网络错误/超时才降级到下一模型
 - **流式**：写出响应头后不再降级；客户端断开只记日志；日志 response_body 存拼接后的完整 SSE 文本
+- **日志按上游尝试记录**：每次尝试一行，request_id（UUID）归组同次客户端请求；启动时及每 24h 清理过期日志
 - **DB 写日志用脱离请求 ctx 的 detached ctx（5s 超时）**，防止客户端断开丢日志
 - **日志 `agent` 字段**记录下游调用方：`X-Client-Name` 请求头优先，缺省回落 `User-Agent`
 - 客户端错误格式 `{"error":{"message","type","code"}}`；管理 API `{"error":"..."}`
-- 管理端 session 在内存中，重启失效是预期行为
+- 管理端 session 在内存中，重启失效是预期行为；Token 列表打码，完整值只在创建和详情接口返回
 - 新增/修改管理 API 时同步改 `web/src/` 下对应页面（views/）与 `web/src/api.js`、`web/src/store.js`
 - **上游协议扩展**：实现 `provider.Provider` 接口（Chat/ListModels），在 main.go 注册；对下游永远暴露 OpenAI 格式
 
