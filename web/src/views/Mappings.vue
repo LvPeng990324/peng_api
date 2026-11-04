@@ -10,6 +10,12 @@
       <template v-if="column.key === 'name'"><span class="mono">{{ m.name }}</span></template>
       <template v-else-if="column.key === 'context_length'">{{ m.context_length ?? '-' }}</template>
       <template v-else-if="column.key === 'max_output_tokens'">{{ m.max_output_tokens ?? '-' }}</template>
+      <template v-else-if="column.key === 'overrides'">
+        <span v-if="overrideKeys(m).length" :title="overrideKeys(m).map(k => k + '=' + JSON.stringify(m.parameter_overrides[k])).join('\n')">
+          {{ overrideKeys(m).join(', ') }}
+        </span>
+        <span v-else class="dim">-</span>
+      </template>
       <template v-else-if="column.key === 'bound'">
         <a class="td-link" @click="showMappingModels(m)">{{ (m.bound_models || []).length }}</a>
       </template>
@@ -33,6 +39,15 @@
       </a-form-item>
       <a-form-item label="最大输出 tokens（可空）">
         <a-input-number v-model:value="mappingForm.max_output_tokens" :min="0" style="width: 100%" />
+      </a-form-item>
+      <a-form-item label="强制参数覆盖（可选，转发时覆盖下游同名字段）">
+        <div v-for="(row, i) in mappingForm.overrides" :key="i" style="display: flex; gap: 8px; margin-bottom: 8px">
+          <a-input v-model:value="row.key" placeholder="参数名，如 temperature" style="width: 42%" />
+          <a-input v-model:value="row.value" placeholder="值，如 1 / true / 字符串" style="flex: 1" />
+          <a-button type="text" danger @click="mappingForm.overrides.splice(i, 1)">删除</a-button>
+        </div>
+        <a-button type="dashed" block @click="mappingForm.overrides.push({ key: '', value: '' })">添加参数</a-button>
+        <p class="dim" style="margin-top: 4px">数值与 true/false 会按原类型发送，其余按字符串发送</p>
       </a-form-item>
       <a-form-item label="绑定模型">
         <div v-for="g in mappingModelGroups" :key="g.channel" style="margin-bottom: 8px">
@@ -72,6 +87,7 @@ const columns = [
   { title: '标准名', key: 'name' },
   { title: '上下文长度', key: 'context_length', width: 110 },
   { title: '最大输出', key: 'max_output_tokens', width: 100 },
+  { title: '强制参数', key: 'overrides', width: 160 },
   { title: '绑定模型数', key: 'bound', width: 110 },
   { title: '操作', key: 'ops', width: 120 },
 ]
@@ -97,8 +113,22 @@ const mappingModelGroups = computed(() => {
 })
 
 const mappingFormOpen = ref(false)
-const mappingForm = reactive({ id: null, name: '', context_length: null, max_output_tokens: null, model_ids: [] })
+const mappingForm = reactive({ id: null, name: '', context_length: null, max_output_tokens: null, model_ids: [], overrides: [] })
 const mappingSaving = ref(false)
+
+function overrideKeys(m) {
+  return Object.keys(m.parameter_overrides || {})
+}
+
+// 文本 → 原始类型：数字/true/false/null 按字面量，JSON 可解析的（含带引号字符串、数组）按 JSON，其余按字符串
+function parseOverrideValue(text) {
+  const t = String(text).trim()
+  if (t === 'true') return true
+  if (t === 'false') return false
+  if (t === 'null') return null
+  if (t !== '' && !Number.isNaN(Number(t))) return Number(t)
+  try { return JSON.parse(t) } catch { return text }
+}
 
 function toggleModelId(id) {
   const i = mappingForm.model_ids.indexOf(id)
@@ -112,9 +142,10 @@ function openMappingForm(m) {
       id: m.id, name: m.name,
       context_length: m.context_length, max_output_tokens: m.max_output_tokens,
       model_ids: (m.bound_models || []).map(x => x.id),
+      overrides: overrideKeys(m).map(k => ({ key: k, value: JSON.stringify(m.parameter_overrides[k]) ?? '' })),
     })
   } else {
-    Object.assign(mappingForm, { id: null, name: '', context_length: null, max_output_tokens: null, model_ids: [] })
+    Object.assign(mappingForm, { id: null, name: '', context_length: null, max_output_tokens: null, model_ids: [], overrides: [] })
   }
   mappingFormOpen.value = true
 }
@@ -124,11 +155,17 @@ async function saveMapping() {
   try {
     await guard(async () => {
       const f = mappingForm
+      const parameter_overrides = {}
+      for (const row of f.overrides) {
+        const key = row.key.trim()
+        if (key) parameter_overrides[key] = parseOverrideValue(row.value)
+      }
       const body = {
         name: f.name,
         context_length: f.context_length || null,
         max_output_tokens: f.max_output_tokens || null,
         model_ids: f.model_ids,
+        parameter_overrides,
       }
       if (f.id) await api('/mappings/' + f.id, { method: 'PUT', body })
       else await api('/mappings', { method: 'POST', body })

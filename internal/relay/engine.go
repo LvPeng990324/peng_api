@@ -33,6 +33,14 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 	agent := clientAgent(r)
 	var failures []string
 
+	// 映射侧强制参数覆盖（如 temperature 固定值），先于 model 替换，对所有候选生效
+	overridden, err := applyOverrides(body, mapping.ParameterOverrides)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	body = overridden
+
 	for i, cand := range candidates {
 		p, ok := e.providers.For(cand.Channel.Type)
 		if !ok {

@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS model_mappings (
   name TEXT NOT NULL UNIQUE,
   context_length INTEGER,
   max_output_tokens INTEGER,
+  parameter_overrides TEXT NOT NULL DEFAULT '',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS model_mapping_models (
@@ -137,6 +138,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := ensureColumn(db, "request_logs", "first_byte_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "model_mappings", "parameter_overrides", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}

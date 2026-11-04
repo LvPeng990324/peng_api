@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -19,25 +20,54 @@ type BoundModel struct {
 
 // Mapping 模型映射（标准名）：请求入口，携带上下文参数，须绑定 ≥1 个模型实体才可被请求到。
 // 请求按 name 大小写敏感精确匹配。
+// ParameterOverrides 是强制覆盖的上游请求参数（如 temperature 固定为 1），转发时覆盖客户端同名字段。
 type Mapping struct {
-	ID              int64        `json:"id"`
-	Name            string       `json:"name"`
-	ContextLength   *int64       `json:"context_length"`
-	MaxOutputTokens *int64       `json:"max_output_tokens"`
-	BoundModels     []BoundModel `json:"bound_models"`
-	CreatedAt       time.Time    `json:"created_at"`
+	ID                 int64          `json:"id"`
+	Name               string         `json:"name"`
+	ContextLength      *int64         `json:"context_length"`
+	MaxOutputTokens    *int64         `json:"max_output_tokens"`
+	ParameterOverrides map[string]any `json:"parameter_overrides"`
+	BoundModels        []BoundModel   `json:"bound_models"`
+	CreatedAt          time.Time      `json:"created_at"`
 }
 
-func (s *Store) CreateMapping(ctx context.Context, name string, contextLength, maxOutputTokens *int64, modelIDs []int64) (*Mapping, error) {
+// encodeOverrides 序列化为 JSON 文本入库；空映射存 ''（扫描侧归一为 nil）
+func encodeOverrides(overrides map[string]any) (string, error) {
+	if len(overrides) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(overrides)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func decodeOverrides(text string) (map[string]any, error) {
+	if text == "" {
+		return nil, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(text), &m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *Store) CreateMapping(ctx context.Context, name string, contextLength, maxOutputTokens *int64, modelIDs []int64, overrides map[string]any) (*Mapping, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
+	ovText, err := encodeOverrides(overrides)
+	if err != nil {
+		return nil, err
+	}
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO model_mappings (name, context_length, max_output_tokens, created_at) VALUES (?, ?, ?, ?)`,
-		name, contextLength, maxOutputTokens, now)
+		`INSERT INTO model_mappings (name, context_length, max_output_tokens, parameter_overrides, created_at) VALUES (?, ?, ?, ?, ?)`,
+		name, contextLength, maxOutputTokens, ovText, now)
 	if err != nil {
 		return nil, err
 	}
@@ -53,19 +83,23 @@ func (s *Store) CreateMapping(ctx context.Context, name string, contextLength, m
 		return nil, err
 	}
 	return &Mapping{ID: id, Name: name, ContextLength: contextLength, MaxOutputTokens: maxOutputTokens,
-		BoundModels: bound, CreatedAt: now}, nil
+		ParameterOverrides: overrides, BoundModels: bound, CreatedAt: now}, nil
 }
 
 // UpdateMapping 全量更新字段与绑定（model_ids 整体替换）；映射不存在返回 ErrNotFound
-func (s *Store) UpdateMapping(ctx context.Context, id int64, name string, contextLength, maxOutputTokens *int64, modelIDs []int64) error {
+func (s *Store) UpdateMapping(ctx context.Context, id int64, name string, contextLength, maxOutputTokens *int64, modelIDs []int64, overrides map[string]any) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	ovText, err := encodeOverrides(overrides)
+	if err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx,
-		`UPDATE model_mappings SET name=?, context_length=?, max_output_tokens=? WHERE id=?`,
-		name, contextLength, maxOutputTokens, id)
+		`UPDATE model_mappings SET name=?, context_length=?, max_output_tokens=?, parameter_overrides=? WHERE id=?`,
+		name, contextLength, maxOutputTokens, ovText, id)
 	if err != nil {
 		return err
 	}
@@ -104,7 +138,7 @@ func (s *Store) DeleteMapping(ctx context.Context, id int64) error {
 
 func (s *Store) ListMappings(ctx context.Context) ([]Mapping, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, context_length, max_output_tokens, created_at FROM model_mappings ORDER BY id`)
+		`SELECT id, name, context_length, max_output_tokens, parameter_overrides, created_at FROM model_mappings ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -113,11 +147,15 @@ func (s *Store) ListMappings(ctx context.Context) ([]Mapping, error) {
 	for rows.Next() {
 		var m Mapping
 		var cl, mo sql.NullInt64
-		if err := rows.Scan(&m.ID, &m.Name, &cl, &mo, &m.CreatedAt); err != nil {
+		var ovText string
+		if err := rows.Scan(&m.ID, &m.Name, &cl, &mo, &ovText, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		m.ContextLength = nullI64(cl)
 		m.MaxOutputTokens = nullI64(mo)
+		if m.ParameterOverrides, err = decodeOverrides(ovText); err != nil {
+			return nil, err
+		}
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -159,9 +197,10 @@ func (s *Store) boundModelsOf(ctx context.Context, mappingID int64) ([]BoundMode
 func (s *Store) ResolveMapping(ctx context.Context, name string) (*Mapping, error) {
 	var m Mapping
 	var cl, mo sql.NullInt64
+	var ovText string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, context_length, max_output_tokens, created_at FROM model_mappings WHERE name=?`, name).
-		Scan(&m.ID, &m.Name, &cl, &mo, &m.CreatedAt)
+		`SELECT id, name, context_length, max_output_tokens, parameter_overrides, created_at FROM model_mappings WHERE name=?`, name).
+		Scan(&m.ID, &m.Name, &cl, &mo, &ovText, &m.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -170,6 +209,9 @@ func (s *Store) ResolveMapping(ctx context.Context, name string) (*Mapping, erro
 	}
 	m.ContextLength = nullI64(cl)
 	m.MaxOutputTokens = nullI64(mo)
+	if m.ParameterOverrides, err = decodeOverrides(ovText); err != nil {
+		return nil, err
+	}
 	return &m, nil
 }
 

@@ -52,7 +52,7 @@ func TestEndToEnd(t *testing.T) {
 		Name: "up", Type: "openai", BaseURL: upstream.URL, APIKey: "k", Priority: 1,
 	})
 	m, _ := st.CreateModel(ctx, ch.ID, "glm-5.3")
-	if _, err := st.CreateMapping(ctx, "glm-5.3", &cl, nil, []int64{m.ID}); err != nil {
+	if _, err := st.CreateMapping(ctx, "glm-5.3", &cl, nil, []int64{m.ID}, nil); err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
 	tok, _ := st.CreateToken(ctx, "e2e")

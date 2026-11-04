@@ -600,3 +600,61 @@ func TestLogsAPI(t *testing.T) {
 		t.Errorf("missing log: %d", resp.StatusCode)
 	}
 }
+
+func TestMappingsAPIParameterOverrides(t *testing.T) {
+	env := newAdminEnv(t)
+	chID := env.createChannel(t, "zhipu", "http://x")
+	resp := env.call(t, http.MethodPost, "/api/models", `{"channel_id":`+itoa(chID)+`,"name":"glm-free"}`)
+	mID := int64(readJSON(t, resp)["id"].(float64))
+
+	// 创建带强制覆盖
+	resp = env.call(t, http.MethodPost, "/api/mappings",
+		`{"name":"forced","model_ids":[`+itoa(mID)+`],"parameter_overrides":{"temperature":1,"stream":false}}`)
+	v := readJSON(t, resp)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create: %d %v", resp.StatusCode, v)
+	}
+	ov := v["parameter_overrides"].(map[string]any)
+	if ov["temperature"].(float64) != 1 || ov["stream"] != false {
+		t.Errorf("create overrides: %v", ov)
+	}
+	mpID := int64(v["id"].(float64))
+
+	// 空参数名 → 400
+	resp = env.call(t, http.MethodPost, "/api/mappings",
+		`{"name":"bad-ov","parameter_overrides":{"  ":1}}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 400 {
+		t.Errorf("blank override key: %d", resp.StatusCode)
+	}
+
+	// 列表带回覆盖
+	resp = env.call(t, http.MethodGet, "/api/mappings", "")
+	list := readJSON(t, resp)["data"].([]any)
+	row := list[0].(map[string]any)
+	if row["parameter_overrides"].(map[string]any)["temperature"].(float64) != 1 {
+		t.Errorf("list overrides: %v", row)
+	}
+
+	// 更新整体替换；不传字段则清空
+	resp = env.call(t, http.MethodPut, "/api/mappings/"+itoa(mpID),
+		`{"name":"forced","model_ids":[`+itoa(mID)+`],"parameter_overrides":{"max_tokens":1024}}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("update: %d", resp.StatusCode)
+	}
+	readJSON(t, resp)
+	mps, _ := env.st.ListMappings(context.Background())
+	if len(mps[0].ParameterOverrides) != 1 || mps[0].ParameterOverrides["max_tokens"] != float64(1024) {
+		t.Errorf("update overrides: %+v", mps[0].ParameterOverrides)
+	}
+	resp = env.call(t, http.MethodPut, "/api/mappings/"+itoa(mpID),
+		`{"name":"forced","model_ids":[`+itoa(mID)+`]}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("update clear: %d", resp.StatusCode)
+	}
+	readJSON(t, resp)
+	mps, _ = env.st.ListMappings(context.Background())
+	if mps[0].ParameterOverrides != nil {
+		t.Errorf("overrides should be cleared: %+v", mps[0].ParameterOverrides)
+	}
+}

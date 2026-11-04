@@ -188,7 +188,7 @@ func (e *testEnv) addModel(t *testing.T, channelName, baseURL string, priority i
 
 func (e *testEnv) addMapping(t *testing.T, name string, modelIDs ...int64) *store.Mapping {
 	t.Helper()
-	mp, err := e.st.CreateMapping(context.Background(), name, nil, nil, modelIDs)
+	mp, err := e.st.CreateMapping(context.Background(), name, nil, nil, modelIDs, nil)
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -640,10 +640,10 @@ func TestModelsEndpoint(t *testing.T) {
 	env := newTestEnv(t, 5*time.Second)
 	_, m := env.addModel(t, "ch", up.url(), 1, "glm-5.3-free")
 	cl, mot := int64(131072), int64(8192)
-	if _, err := env.st.CreateMapping(context.Background(), "glm-5.3", &cl, &mot, []int64{m.ID}); err != nil {
+	if _, err := env.st.CreateMapping(context.Background(), "glm-5.3", &cl, &mot, []int64{m.ID}, nil); err != nil {
 		t.Fatal(err)
 	}
-	env.st.CreateMapping(context.Background(), "hidden", nil, nil, nil) // 未绑定模型
+	env.st.CreateMapping(context.Background(), "hidden", nil, nil, nil, nil) // 未绑定模型
 
 	req, _ := http.NewRequest(http.MethodGet, env.client.URL+"/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+env.tok.Token)
@@ -660,5 +660,53 @@ func TestModelsEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(body, `"context_length":131072`) || !strings.Contains(body, `"max_output_tokens":8192`) {
 		t.Errorf("mapping params missing: %s", body)
+	}
+}
+
+func TestEngineParameterOverrides(t *testing.T) {
+	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
+	})
+	defer up.close()
+
+	env := newTestEnv(t, 5*time.Second)
+	_, m := env.addModel(t, "ch", up.url(), 1, "glm-5.3-free")
+	// 标准名 glm-5.3：强制 temperature=1、stream=false，客户端传什么都被覆盖
+	mp, err := env.st.CreateMapping(context.Background(), "glm-5.3", nil, nil,
+		[]int64{m.ID}, map[string]any{"temperature": float64(1), "stream": false})
+	if err != nil {
+		t.Fatalf("CreateMapping: %v", err)
+	}
+	if mp.ParameterOverrides["temperature"] != float64(1) {
+		t.Fatalf("overrides not returned: %+v", mp)
+	}
+
+	resp := env.chat(t, `{"model":"glm-5.3","messages":[],"temperature":0.2,"top_p":0.5,"stream":true}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	got := up.lastBody()
+	if !strings.Contains(got, `"temperature":1`) {
+		t.Errorf("temperature not overridden: %s", got)
+	}
+	if !strings.Contains(got, `"stream":false`) {
+		t.Errorf("stream not overridden: %s", got)
+	}
+	if !strings.Contains(got, `"top_p":0.5`) {
+		t.Errorf("non-overridden param must pass through: %s", got)
+	}
+	if !strings.Contains(got, `"model":"glm-5.3-free"`) {
+		t.Errorf("model must still be replaced: %s", got)
+	}
+
+	// 更新映射清掉覆盖后，客户端参数原样透传
+	if err := env.st.UpdateMapping(context.Background(), mp.ID, "glm-5.3", nil, nil, []int64{m.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	resp = env.chat(t, `{"model":"glm-5.3","messages":[],"temperature":0.7}`)
+	readBody(t, resp)
+	if !strings.Contains(up.lastBody(), `"temperature":0.7`) {
+		t.Errorf("override cleared but param not passed through: %s", up.lastBody())
 	}
 }

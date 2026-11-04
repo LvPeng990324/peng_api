@@ -289,7 +289,7 @@ func TestChannelDeleteCascadesModels(t *testing.T) {
 	ctx := context.Background()
 	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
 	m, _ := s.CreateModel(ctx, ch.ID, "glm-5.3")
-	mp, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID})
+	mp, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID}, nil)
 
 	if err := s.DeleteChannel(ctx, ch.ID); err != nil {
 		t.Fatalf("DeleteChannel: %v", err)
@@ -334,7 +334,7 @@ func TestModelCRUD(t *testing.T) {
 	}
 
 	// 绑定标准名后列表带出渠道名 + 映射名
-	mp, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID})
+	mp, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID}, nil)
 	list, err := s.ListModels(ctx)
 	if err != nil || len(list) != 2 {
 		t.Fatalf("ListModels: %v len=%d", err, len(list))
@@ -391,7 +391,7 @@ func TestSelectModelsOrderAndDisabledSkip(t *testing.T) {
 	s.SetChannelEnabled(ctx, off.ID, false)
 
 	mp, err := s.CreateMapping(ctx, "glm-5.3", nil, nil,
-		[]int64{mLow.ID, mHigh1.ID, mHigh2.ID, mOff.ID})
+		[]int64{mLow.ID, mHigh1.ID, mHigh2.ID, mOff.ID}, nil)
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestSelectModelsOrderAndDisabledSkip(t *testing.T) {
 	}
 
 	// 未绑定任何模型的映射 → 空
-	empty, _ := s.CreateMapping(ctx, "empty-map", nil, nil, nil)
+	empty, _ := s.CreateMapping(ctx, "empty-map", nil, nil, nil, nil)
 	cands, _ = s.SelectModels(ctx, empty.ID)
 	if len(cands) != 0 {
 		t.Errorf("unbound mapping must have no candidates: %+v", cands)
@@ -426,7 +426,7 @@ func TestMappingCRUDAndResolve(t *testing.T) {
 	m1, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
 	m2, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-pro")
 
-	mp, err := s.CreateMapping(ctx, "glm-5.3", ptrI64(131072), ptrI64(8192), []int64{m1.ID, m2.ID})
+	mp, err := s.CreateMapping(ctx, "glm-5.3", ptrI64(131072), ptrI64(8192), []int64{m1.ID, m2.ID}, nil)
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -438,11 +438,11 @@ func TestMappingCRUDAndResolve(t *testing.T) {
 	}
 
 	// 重名 → UNIQUE 冲突
-	if _, err := s.CreateMapping(ctx, "glm-5.3", nil, nil, nil); err == nil {
+	if _, err := s.CreateMapping(ctx, "glm-5.3", nil, nil, nil, nil); err == nil {
 		t.Fatal("duplicate mapping name must fail")
 	}
 	// 绑定不存在的模型 → FK 错误
-	if _, err := s.CreateMapping(ctx, "bad", nil, nil, []int64{9999}); err == nil {
+	if _, err := s.CreateMapping(ctx, "bad", nil, nil, []int64{9999}, nil); err == nil {
 		t.Fatal("binding missing model must fail (FK)")
 	}
 
@@ -467,7 +467,7 @@ func TestMappingCRUDAndResolve(t *testing.T) {
 	}
 
 	// 全量更新：改参数 + 整体替换绑定
-	if err := s.UpdateMapping(ctx, mp.ID, "glm-5.3", ptrI64(200000), nil, []int64{m2.ID}); err != nil {
+	if err := s.UpdateMapping(ctx, mp.ID, "glm-5.3", ptrI64(200000), nil, []int64{m2.ID}, nil); err != nil {
 		t.Fatalf("UpdateMapping: %v", err)
 	}
 	list, _ = s.ListMappings(ctx)
@@ -478,11 +478,11 @@ func TestMappingCRUDAndResolve(t *testing.T) {
 		t.Errorf("params not updated: %+v", list[0])
 	}
 	// 重复的 model_ids 去重
-	if err := s.UpdateMapping(ctx, mp.ID, "glm-5.3", nil, nil, []int64{m2.ID, m2.ID}); err != nil {
+	if err := s.UpdateMapping(ctx, mp.ID, "glm-5.3", nil, nil, []int64{m2.ID, m2.ID}, nil); err != nil {
 		t.Fatalf("UpdateMapping dup ids: %v", err)
 	}
 	// 不存在的映射 → ErrNotFound
-	if err := s.UpdateMapping(ctx, 9999, "x", nil, nil, nil); !errors.Is(err, ErrNotFound) {
+	if err := s.UpdateMapping(ctx, 9999, "x", nil, nil, nil, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 
@@ -501,8 +501,8 @@ func TestListMappingsWithEnabledModels(t *testing.T) {
 	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
 	m, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
 
-	withModel, _ := s.CreateMapping(ctx, "has-model", ptrI64(1000), nil, []int64{m.ID})
-	without, _ := s.CreateMapping(ctx, "no-model", nil, nil, nil)
+	withModel, _ := s.CreateMapping(ctx, "has-model", ptrI64(1000), nil, []int64{m.ID}, nil)
+	without, _ := s.CreateMapping(ctx, "no-model", nil, nil, nil, nil)
 
 	list, err := s.ListMappingsWithEnabledModels(ctx)
 	if err != nil || len(list) != 1 || list[0].ID != withModel.ID {
@@ -619,5 +619,70 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	deleted, err = s.DeleteLogsBefore(ctx, time.Now().UTC().Add(time.Minute))
 	if err != nil || deleted != 2 {
 		t.Fatalf("DeleteLogsBefore all: %v deleted=%d", err, deleted)
+	}
+}
+
+
+func TestMappingParameterOverrides(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
+	m, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
+
+	// 创建时不带覆盖 → nil
+	mp, err := s.CreateMapping(ctx, "plain", nil, nil, []int64{m.ID}, nil)
+	if err != nil {
+		t.Fatalf("CreateMapping: %v", err)
+	}
+	if mp.ParameterOverrides != nil {
+		t.Errorf("overrides should be nil: %+v", mp.ParameterOverrides)
+	}
+	got, _ := s.ResolveMapping(ctx, "plain")
+	if got.ParameterOverrides != nil {
+		t.Errorf("resolve overrides should be nil: %+v", got.ParameterOverrides)
+	}
+
+	// 创建时带覆盖（数值/布尔/字符串混合）
+	ov := map[string]any{"temperature": float64(1), "top_p": float64(0.9), "stream": false, "custom_tag": "abc"}
+	mp, err = s.CreateMapping(ctx, "forced", nil, nil, []int64{m.ID}, ov)
+	if err != nil {
+		t.Fatalf("CreateMapping with overrides: %v", err)
+	}
+	if mp.ParameterOverrides["temperature"] != float64(1) || mp.ParameterOverrides["stream"] != false {
+		t.Errorf("create returns overrides: %+v", mp.ParameterOverrides)
+	}
+
+	// Resolve 往返
+	got, err = s.ResolveMapping(ctx, "forced")
+	if err != nil || got == nil {
+		t.Fatalf("ResolveMapping: %v %+v", err, got)
+	}
+	if got.ParameterOverrides["temperature"] != float64(1) ||
+		got.ParameterOverrides["top_p"] != float64(0.9) ||
+		got.ParameterOverrides["stream"] != false ||
+		got.ParameterOverrides["custom_tag"] != "abc" {
+		t.Errorf("overrides roundtrip: %+v", got.ParameterOverrides)
+	}
+
+	// List 往返
+	list, _ := s.ListMappings(ctx)
+	if len(list) != 2 || list[1].ParameterOverrides["temperature"] != float64(1) {
+		t.Errorf("ListMappings overrides: %+v", list)
+	}
+
+	// 更新：整体替换覆盖参数；传 nil 清空
+	if err := s.UpdateMapping(ctx, mp.ID, "forced", nil, nil, []int64{m.ID}, map[string]any{"max_tokens": float64(1024)}); err != nil {
+		t.Fatalf("UpdateMapping: %v", err)
+	}
+	got, _ = s.ResolveMapping(ctx, "forced")
+	if len(got.ParameterOverrides) != 1 || got.ParameterOverrides["max_tokens"] != float64(1024) {
+		t.Errorf("overrides replaced: %+v", got.ParameterOverrides)
+	}
+	if err := s.UpdateMapping(ctx, mp.ID, "forced", nil, nil, []int64{m.ID}, nil); err != nil {
+		t.Fatalf("UpdateMapping clear: %v", err)
+	}
+	got, _ = s.ResolveMapping(ctx, "forced")
+	if got.ParameterOverrides != nil {
+		t.Errorf("overrides should be cleared: %+v", got.ParameterOverrides)
 	}
 }

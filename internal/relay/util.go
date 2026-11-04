@@ -25,6 +25,22 @@ func replaceModel(body []byte, model string) ([]byte, error) {
 	return json.Marshal(m)
 }
 
+// applyOverrides 把映射侧的强制参数覆盖进请求体（覆盖客户端同名字段）；
+// model 字段不在此处理，始终由 replaceModel 强制替换为模型实体名
+func applyOverrides(body []byte, overrides map[string]any) ([]byte, error) {
+	if len(overrides) == 0 {
+		return body, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range overrides {
+		m[k] = v
+	}
+	return json.Marshal(m)
+}
+
 func newUUID() string {
 	var b [16]byte
 	rand.Read(b[:])
