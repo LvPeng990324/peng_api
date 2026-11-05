@@ -32,18 +32,19 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import { theme } from 'ant-design-vue'
 import { api, setUnauthorizedHandler } from './api'
 import { guard, loadAll, store, tabs } from './store'
 // 页面组件按需加载：每个页面单独成 chunk，首屏只下载当前页代码
-const Login = () => import('./views/Login.vue')
-const Channels = () => import('./views/Channels.vue')
-const Models = () => import('./views/Models.vue')
-const Mappings = () => import('./views/Mappings.vue')
-const Tokens = () => import('./views/Tokens.vue')
-const Logs = () => import('./views/Logs.vue')
+// 注意必须用 defineAsyncComponent 包裹，裸的 () => import() 会被当成函数组件渲染出 [object Promise]
+const Login = defineAsyncComponent(() => import('./views/Login.vue'))
+const Channels = defineAsyncComponent(() => import('./views/Channels.vue'))
+const Models = defineAsyncComponent(() => import('./views/Models.vue'))
+const Mappings = defineAsyncComponent(() => import('./views/Mappings.vue'))
+const Tokens = defineAsyncComponent(() => import('./views/Tokens.vue'))
+const Logs = defineAsyncComponent(() => import('./views/Logs.vue'))
 
 const siderCollapsed = ref(false)
 
