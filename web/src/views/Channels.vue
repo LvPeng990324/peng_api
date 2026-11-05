@@ -89,7 +89,7 @@
   <a-modal v-model:open="fetchDlgOpen" :title="'获取到的上游模型：' + fetchDlg.channelName" width="860px" :footer="null">
     <a-spin :spinning="fetchDlg.loading" style="display: block; min-height: 160px">
     <template v-if="fetchDlg.loaded">
-    <p class="dim">勾选要创建为模型实体的上游模型（「可增加」组默认勾选）。「已有」项已是该渠道的模型实体，仅作展示。</p>
+    <p class="dim">勾选要创建为模型实体的上游模型（「可增加」组默认不勾选，请手动勾选需要的模型）。「已有」项已是该渠道的模型实体，仅作展示。</p>
     <a-input v-model:value="fetchDlg.filter" placeholder="按模型名筛选…" style="margin-bottom: 14px" />
 
     <h4>可增加（{{ newRows.length }}）</h4>
@@ -264,7 +264,7 @@ async function fetchModels(c) {
   await guard(async () => {
     const v = await api('/channels/' + c.id + '/fetch-models', { method: 'POST' })
     fetchDlg.rows = (v.data || []).map(r => ({
-      checked: !r.exists,
+      checked: false,
       category: r.exists ? 'existing' : 'new',
       name: r.name,
       context_length: r.context_length,
