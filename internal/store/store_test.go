@@ -165,6 +165,10 @@ func TestOpenDropsLegacySchema(t *testing.T) {
 	if err != nil || total != 1 || logs[0].RequestID != "r1" {
 		t.Fatalf("request_logs must survive: %v total=%d", err, total)
 	}
+	// 旧库无 model_actual 列：补列后历史日志应为空串且可正常读取
+	if logs[0].ModelActual != "" {
+		t.Errorf("migrated log should have empty model_actual: %q", logs[0].ModelActual)
+	}
 	// 重建后能正常走新流程
 	ch, err := s.CreateChannel(ctx, Channel{Name: "new", Type: "openai", BaseURL: "http://y", APIKey: "k"})
 	if err != nil {
@@ -531,7 +535,7 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	base := LogEntry{
 		RequestID: "req-1", Attempt: 1, TokenName: "cline",
 		Agent:          "kimi-code",
-		ModelRequested: "GLM5.3", ModelCanonical: "glm-5.3",
+		ModelRequested: "GLM5.3", ModelCanonical: "glm-5.3", ModelActual: "glm-5.3-free",
 		ChannelName: "zhipu", Status: "failed", Error: "upstream 500",
 		RequestBody: `{"model":"GLM5.3"}`, ResponseBody: `{"error":"boom"}`,
 		LatencyMS: 120, CreatedAt: time.Now().UTC().Add(-time.Hour),
@@ -542,6 +546,7 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	}
 	e2 := base
 	e2.Attempt = 2
+	e2.ModelActual = "glm-5.3-paid" // 降级到另一个渠道的模型实体
 	e2.Status = "success"
 	e2.Error = ""
 	e2.HTTPStatus = new(int)
@@ -571,6 +576,10 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	if rows[1].Agent != "kimi-code" {
 		t.Errorf("agent roundtrip: %q", rows[1].Agent)
 	}
+	// 列表：每次尝试各自记录实际发往上游的模型实体名
+	if rows[0].ModelActual != "glm-5.3-paid" || rows[1].ModelActual != "glm-5.3-free" {
+		t.Errorf("model_actual roundtrip: %q / %q", rows[0].ModelActual, rows[1].ModelActual)
+	}
 
 	// 状态筛选
 	rows, total, _ = s.ListLogs(ctx, LogFilter{Status: "failed", Page: 1, Size: 10})
@@ -587,6 +596,10 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	if total != 2 {
 		t.Errorf("model filter should match canonical: total=%d", total)
 	}
+	_, total, _ = s.ListLogs(ctx, LogFilter{Model: "glm-5.3-paid", Page: 1, Size: 10})
+	if total != 1 {
+		t.Errorf("model filter should match actual: total=%d", total)
+	}
 
 	// 详情 + 降级链路归组
 	got, err := s.GetLog(ctx, id1)
@@ -599,6 +612,13 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 	}
 	if group[0].Agent != "kimi-code" {
 		t.Errorf("agent in group: %q", group[0].Agent)
+	}
+	// 详情 / 归组也要带上实际模型名
+	if got.ModelActual != "glm-5.3-free" {
+		t.Errorf("model_actual in GetLog: %q", got.ModelActual)
+	}
+	if group[0].ModelActual != "glm-5.3-free" || group[1].ModelActual != "glm-5.3-paid" {
+		t.Errorf("model_actual in group: %q / %q", group[0].ModelActual, group[1].ModelActual)
 	}
 
 	// agent 模糊筛选

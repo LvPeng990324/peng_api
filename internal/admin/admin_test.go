@@ -560,11 +560,11 @@ func TestLogsAPI(t *testing.T) {
 
 	// 造两条日志：同一 request_id 的两次尝试
 	env.st.InsertLog(ctx, store.LogEntry{
-		RequestID: "req-a", Attempt: 1, ModelRequested: "m1", ModelCanonical: "m1",
+		RequestID: "req-a", Attempt: 1, ModelRequested: "m1", ModelCanonical: "m1", ModelActual: "m1-free",
 		ChannelName: "c1", Status: "failed", Error: "boom", RequestBody: "{}", ResponseBody: "err",
 	})
 	secondID, _ := env.st.InsertLog(ctx, store.LogEntry{
-		RequestID: "req-a", Attempt: 2, ModelRequested: "m1", ModelCanonical: "m1",
+		RequestID: "req-a", Attempt: 2, ModelRequested: "m1", ModelCanonical: "m1", ModelActual: "m1-paid",
 		ChannelName: "c2", Status: "success", RequestBody: "{}", ResponseBody: "ok",
 	})
 
@@ -573,6 +573,11 @@ func TestLogsAPI(t *testing.T) {
 	v := readJSON(t, resp)
 	if resp.StatusCode != 200 || v["total"].(float64) != 2 {
 		t.Fatalf("list: %d %v", resp.StatusCode, v)
+	}
+	// 列表接口要把实际模型名返回给前端
+	list := v["data"].([]any)
+	if len(list) != 2 || list[0].(map[string]any)["model_actual"] != "m1-paid" {
+		t.Errorf("model_actual in list: %v", list)
 	}
 
 	// 状态筛选
@@ -591,6 +596,10 @@ func TestLogsAPI(t *testing.T) {
 	attempts := v["attempts"].([]any)
 	if len(attempts) != 2 || attempts[0].(map[string]any)["attempt"].(float64) != 1 {
 		t.Errorf("attempts group: %v", attempts)
+	}
+	if v["data"].(map[string]any)["model_actual"] != "m1-paid" ||
+		attempts[0].(map[string]any)["model_actual"] != "m1-free" {
+		t.Errorf("model_actual in detail: %v", v)
 	}
 
 	// 不存在 → 404

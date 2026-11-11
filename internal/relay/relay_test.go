@@ -253,6 +253,10 @@ func TestEngineSuccessMappingAndEntityRename(t *testing.T) {
 	if l.PromptTokens == nil || *l.PromptTokens != 3 {
 		t.Errorf("usage not parsed: %+v", l)
 	}
+	// 日志要记录本次尝试真正发往上游的模型实体名，而非标准名
+	if l.ModelActual != "glm-5.3-free" {
+		t.Errorf("log must record actual upstream model: %q", l.ModelActual)
+	}
 }
 
 func TestEngineAgentHeaderAndUserAgentFallback(t *testing.T) {

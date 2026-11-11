@@ -37,6 +37,7 @@
         <span class="mono model-cell" :title="l.model_requested + (l.model_canonical && l.model_canonical !== l.model_requested ? ' → ' + l.model_canonical : '')">
           {{ l.model_requested }}<template v-if="l.model_canonical && l.model_canonical !== l.model_requested"> → {{ l.model_canonical }}</template>
         </span>
+        <div v-if="l.model_actual" class="ch-remark mono" :title="l.model_actual">{{ l.model_actual }}</div>
       </template>
       <template v-else-if="column.key === 'channel'">
         {{ l.channel_name || '-' }}<span class="dim">#{{ l.attempt }}</span>

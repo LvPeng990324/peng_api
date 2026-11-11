@@ -58,7 +58,7 @@ func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
 		entry := store.LogEntry{
 			RequestID: requestID, Attempt: i + 1,
 			TokenID: &tok.ID, TokenName: tok.Name, Agent: agent,
-			ModelRequested: mapping.Name, ModelCanonical: mapping.Name,
+			ModelRequested: mapping.Name, ModelCanonical: mapping.Name, ModelActual: cand.ModelName,
 			ChannelID: &cand.Channel.ID, ChannelName: cand.Channel.Name,
 			Stream: stream, RequestBody: string(reqBody),
 		}

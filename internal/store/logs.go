@@ -16,6 +16,7 @@ type LogEntry struct {
 	Agent            string    `json:"agent"`
 	ModelRequested   string    `json:"model_requested"`
 	ModelCanonical   string    `json:"model_canonical"`
+	ModelActual      string    `json:"model_actual"`
 	ChannelID        *int64    `json:"channel_id"`
 	ChannelName      string    `json:"channel_name"`
 	Stream           bool      `json:"stream"`
@@ -38,11 +39,11 @@ func (s *Store) InsertLog(ctx context.Context, e LogEntry) (int64, error) {
 	}
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO request_logs
-		(request_id, attempt, token_id, token_name, agent, model_requested, model_canonical,
+		(request_id, attempt, token_id, token_name, agent, model_requested, model_canonical, model_actual,
 		 channel_id, channel_name, stream, status, http_status, error,
 		 request_body, response_body, prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, first_byte_ms, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		 e.RequestID, e.Attempt, e.TokenID, e.TokenName, e.Agent, e.ModelRequested, e.ModelCanonical,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 e.RequestID, e.Attempt, e.TokenID, e.TokenName, e.Agent, e.ModelRequested, e.ModelCanonical, e.ModelActual,
 		 e.ChannelID, e.ChannelName, e.Stream, e.Status, e.HTTPStatus, e.Error,
 		 e.RequestBody, e.ResponseBody, e.PromptTokens, e.CompletionTokens, e.PromptCacheHitTokens, e.LatencyMS, e.FirstByteMS, e.CreatedAt)
 	if err != nil {
@@ -68,8 +69,8 @@ func (f LogFilter) where() (string, []any) {
 	var args []any
 	if f.Model != "" {
 		like := "%" + f.Model + "%"
-		conds = append(conds, "(model_requested LIKE ? OR model_canonical LIKE ?)")
-		args = append(args, like, like)
+		conds = append(conds, "(model_requested LIKE ? OR model_canonical LIKE ? OR model_actual LIKE ?)")
+		args = append(args, like, like, like)
 	}
 	if f.Status != "" {
 		conds = append(conds, "status = ?")
@@ -114,7 +115,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 		`SELECT COUNT(*) FROM request_logs`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	q := `SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical,
+	q := `SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical, model_actual,
 		channel_id, channel_name, stream, status, http_status, error,
 		prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, first_byte_ms, created_at
 		FROM request_logs` + where + ` ORDER BY id DESC LIMIT ? OFFSET ?`
@@ -136,7 +137,7 @@ func (s *Store) ListLogs(ctx context.Context, f LogFilter) ([]LogEntry, int, err
 
 func (s *Store) GetLog(ctx context.Context, id int64) (*LogEntry, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical,
+		SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical, model_actual,
 		       channel_id, channel_name, stream, status, http_status, error, request_body, response_body,
 		       prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, first_byte_ms, created_at
 		FROM request_logs WHERE id=?`, id)
@@ -149,7 +150,7 @@ func (s *Store) GetLog(ctx context.Context, id int64) (*LogEntry, error) {
 
 func (s *Store) GetLogGroup(ctx context.Context, requestID string) ([]LogEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical,
+		SELECT id, request_id, attempt, token_id, token_name, agent, model_requested, model_canonical, model_actual,
 		       channel_id, channel_name, stream, status, http_status, error, request_body, response_body,
 		       prompt_tokens, completion_tokens, prompt_cache_hit_tokens, latency_ms, first_byte_ms, created_at
 		FROM request_logs WHERE request_id=? ORDER BY attempt ASC`, requestID)
@@ -186,7 +187,7 @@ func scanLogList(row logScanner) (*LogEntry, error) {
 	var tokenID, channelID sql.NullInt64
 	var httpStatus, promptTokens, completionTokens, cacheHit sql.NullInt64
 	err := row.Scan(&e.ID, &e.RequestID, &e.Attempt, &tokenID, &e.TokenName, &e.Agent,
-		&e.ModelRequested, &e.ModelCanonical, &channelID, &e.ChannelName, &e.Stream,
+		&e.ModelRequested, &e.ModelCanonical, &e.ModelActual, &channelID, &e.ChannelName, &e.Stream,
 		&e.Status, &httpStatus, &e.Error,
 		&promptTokens, &completionTokens, &cacheHit, &e.LatencyMS, &e.FirstByteMS, &e.CreatedAt)
 	if err != nil {
@@ -222,7 +223,7 @@ func scanLog(row logScanner) (*LogEntry, error) {
 	var tokenID, channelID sql.NullInt64
 	var httpStatus, promptTokens, completionTokens, cacheHit sql.NullInt64
 	err := row.Scan(&e.ID, &e.RequestID, &e.Attempt, &tokenID, &e.TokenName, &e.Agent,
-		&e.ModelRequested, &e.ModelCanonical, &channelID, &e.ChannelName, &e.Stream,
+		&e.ModelRequested, &e.ModelCanonical, &e.ModelActual, &channelID, &e.ChannelName, &e.Stream,
 		&e.Status, &httpStatus, &e.Error, &e.RequestBody, &e.ResponseBody,
 		&promptTokens, &completionTokens, &cacheHit, &e.LatencyMS, &e.FirstByteMS, &e.CreatedAt)
 	if err != nil {

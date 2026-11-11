@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS request_logs (
   agent TEXT NOT NULL DEFAULT '',
   model_requested TEXT NOT NULL,
   model_canonical TEXT NOT NULL DEFAULT '',
+  model_actual TEXT NOT NULL DEFAULT '',
   channel_id INTEGER,
   channel_name TEXT NOT NULL DEFAULT '',
   stream INTEGER NOT NULL DEFAULT 0,
@@ -138,6 +139,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := ensureColumn(db, "request_logs", "first_byte_ms", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureColumn(db, "request_logs", "model_actual", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		db.Close()
 		return nil, err
 	}
