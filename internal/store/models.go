@@ -14,7 +14,8 @@ type Model struct {
 	ChannelID   int64     `json:"channel_id"`
 	ChannelName string    `json:"channel_name"`
 	Name        string    `json:"name"`
-	Mappings    []string  `json:"mappings"` // 绑定的标准名列表
+	Mappings    []string  `json:"mappings"`    // 绑定的标准名列表，供列表展示
+	MappingIDs  []int64   `json:"mapping_ids"` // 绑定的标准名 id，供模型侧编辑弹窗回显
 	CreatedAt   time.Time `json:"created_at"`
 }
 
@@ -79,34 +80,38 @@ func (s *Store) queryModels(ctx context.Context, query string, args ...any) ([]M
 		return nil, err
 	}
 	for i := range out {
-		mappings, err := s.mappingsOfModel(ctx, out[i].ID)
+		ids, names, err := s.modelBindings(ctx, out[i].ID)
 		if err != nil {
 			return nil, err
 		}
-		out[i].Mappings = mappings
+		out[i].MappingIDs = ids
+		out[i].Mappings = names
 	}
 	return out, nil
 }
 
-// mappingsOfModel 模型实体被哪些标准名绑定
-func (s *Store) mappingsOfModel(ctx context.Context, modelID int64) ([]string, error) {
+// modelBindings 模型实体被哪些标准名绑定，一次查询同时给出 id（编辑回显）与 name（列表展示），按标准名排序
+func (s *Store) modelBindings(ctx context.Context, modelID int64) ([]int64, []string, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT mp.name FROM model_mapping_models mm
+		SELECT mp.id, mp.name FROM model_mapping_models mm
 		JOIN model_mappings mp ON mp.id = mm.mapping_id
 		WHERE mm.model_id=? ORDER BY mp.name`, modelID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
-	out := []string{}
+	ids := []int64{}
+	names := []string{}
 	for rows.Next() {
+		var id int64
 		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, nil, err
 		}
-		out = append(out, name)
+		ids = append(ids, id)
+		names = append(names, name)
 	}
-	return out, rows.Err()
+	return ids, names, rows.Err()
 }
 
 func (s *Store) GetModel(ctx context.Context, id int64) (*Model, error) {
@@ -121,18 +126,48 @@ func (s *Store) GetModel(ctx context.Context, id int64) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	mappings, err := s.mappingsOfModel(ctx, id)
+	ids, names, err := s.modelBindings(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	m.Mappings = mappings
+	m.MappingIDs = ids
+	m.Mappings = names
 	return &m, nil
 }
 
-// UpdateModel 模型实体改名（同渠道重名会撞 UNIQUE 约束，由调用方翻译为 400）
-func (s *Store) UpdateModel(ctx context.Context, id int64, name string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE models SET name=? WHERE id=?`, name, id)
-	return err
+// UpdateModel 原子更新模型名与（可选）标准名绑定。
+// mappingIDs == nil 表示不动绑定（兼容只改名的调用）；非 nil（含空切片）表示全量替换该模型与标准名的绑定。
+// 模型不存在返回 ErrNotFound；mapping_id 不存在时由外键报错，整个事务回滚，不留半成品。
+func (s *Store) UpdateModel(ctx context.Context, id int64, name string, mappingIDs *[]int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE models SET name=? WHERE id=?`, name, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if mappingIDs != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM model_mapping_models WHERE model_id=?`, id); err != nil {
+			return err
+		}
+		seen := make(map[int64]bool, len(*mappingIDs))
+		for _, mpID := range *mappingIDs {
+			if seen[mpID] {
+				continue
+			}
+			seen[mpID] = true
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO model_mapping_models (mapping_id, model_id) VALUES (?, ?)`, mpID, id); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DeleteModel(ctx context.Context, id int64) error {

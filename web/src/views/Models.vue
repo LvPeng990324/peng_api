@@ -31,13 +31,27 @@
       <a-form-item label="名称">
         <a-input v-model:value="modelForm.name" placeholder="上游模型名，如 glm-5.3" />
       </a-form-item>
+      <a-form-item v-if="modelForm.id" label="绑定标准名">
+        <a-select
+          v-model:value="modelForm.mapping_ids"
+          mode="multiple"
+          allow-clear
+          placeholder="选择要绑定的标准名，可多选"
+          :options="mappingOptions"
+          option-filter-prop="label"
+        />
+        <p class="dim" style="margin-top: 4px">
+          保存时整体替换该模型与标准名的绑定关系，与在「模型映射」页编辑绑定模型等价；清空即解除全部绑定。
+        </p>
+      </a-form-item>
+      <div v-else class="dim" style="margin-bottom: 12px">创建后点「编辑」可绑定到标准名。</div>
     </a-form>
   </a-modal>
 </div>
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { Modal } from 'ant-design-vue'
 import { api } from '../api'
 import { guard, loadMappings, loadModels, store } from '../store'
@@ -53,14 +67,20 @@ const columns = [
 ]
 
 const modelFormOpen = ref(false)
-const modelForm = reactive({ id: null, channel_id: null, name: '' })
+const modelForm = reactive({ id: null, channel_id: null, name: '', mapping_ids: [] })
 const modelSaving = ref(false)
+
+const mappingOptions = computed(() => store.mappings.map(x => ({ label: x.name, value: x.id })))
 
 function openModelForm(m) {
   if (m) {
-    Object.assign(modelForm, { id: m.id, channel_id: m.channel_id, name: m.name })
+    Object.assign(modelForm, {
+      id: m.id, channel_id: m.channel_id, name: m.name, mapping_ids: m.mapping_ids || [],
+    })
   } else {
-    Object.assign(modelForm, { id: null, channel_id: store.channels.length ? store.channels[0].id : null, name: '' })
+    Object.assign(modelForm, {
+      id: null, channel_id: store.channels.length ? store.channels[0].id : null, name: '', mapping_ids: [],
+    })
   }
   modelFormOpen.value = true
 }
@@ -70,12 +90,16 @@ async function saveModel() {
   try {
     await guard(async () => {
       if (modelForm.id) {
-        await api('/models/' + modelForm.id, { method: 'PUT', body: { name: modelForm.name } })
+        await api('/models/' + modelForm.id, {
+          method: 'PUT',
+          body: { name: modelForm.name, mapping_ids: modelForm.mapping_ids },
+        })
       } else {
         await api('/models', { method: 'POST', body: { channel_id: modelForm.channel_id, name: modelForm.name } })
       }
       modelFormOpen.value = false
-      await loadModels()
+      // 绑定是双向的：模型页与映射页的数据都要刷新
+      await Promise.all([loadModels(), loadMappings()])
     })
   } finally {
     modelSaving.value = false
@@ -94,5 +118,5 @@ function delModel(m) {
   })
 }
 
-onMounted(loadModels)
+onMounted(() => Promise.all([loadModels(), loadMappings()]))
 </script>

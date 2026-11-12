@@ -359,7 +359,7 @@ func TestModelCRUD(t *testing.T) {
 	}
 
 	// 改名
-	if err := s.UpdateModel(ctx, m.ID, "glm-5.3"); err != nil {
+	if err := s.UpdateModel(ctx, m.ID, "glm-5.3", nil); err != nil {
 		t.Fatalf("UpdateModel: %v", err)
 	}
 	got2, _ := s.GetModel(ctx, m.ID)
@@ -472,6 +472,71 @@ func TestBoundModelsFollowCallOrder(t *testing.T) {
 		if last := bound[len(bound)-1]; last.Name != "glm-off" || last.ChannelEnabled || last.ChannelPriority != 100 {
 			t.Errorf("disabled channel model should be last and marked disabled: %+v", last)
 		}
+	}
+}
+
+// 模型侧编辑绑定：改名与绑定替换在同一事务内，失败时整体回滚
+func TestUpdateModelMappings(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+
+	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
+	m, _ := s.CreateModel(ctx, ch.ID, "glm-free")
+	mpA, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID}, nil)
+	mpB, _ := s.CreateMapping(ctx, "claude-sonnet", nil, nil, nil, nil)
+
+	// 只改名、mappingIDs=nil → 绑定不动
+	if err := s.UpdateModel(ctx, m.ID, "glm-free-v2", nil); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	got, _ := s.GetModel(ctx, m.ID)
+	if got.Name != "glm-free-v2" || len(got.MappingIDs) != 1 || got.MappingIDs[0] != mpA.ID {
+		t.Fatalf("nil must keep bindings: %+v", got)
+	}
+
+	// 全量替换（重复 id 去重），列表与详情都要带上 id + 名字
+	ids := []int64{mpB.ID, mpA.ID, mpB.ID}
+	if err := s.UpdateModel(ctx, m.ID, "glm-free-v2", &ids); err != nil {
+		t.Fatalf("replace bindings: %v", err)
+	}
+	got, _ = s.GetModel(ctx, m.ID)
+	// modelBindings 按标准名排序：claude-sonnet < glm-5.3
+	if len(got.MappingIDs) != 2 || got.MappingIDs[0] != mpB.ID || got.MappingIDs[1] != mpA.ID ||
+		len(got.Mappings) != 2 || got.Mappings[0] != "claude-sonnet" {
+		t.Errorf("bindings not replaced/deduped: %+v", got)
+	}
+	list, _ := s.ListModels(ctx)
+	if len(list[0].MappingIDs) != 2 {
+		t.Errorf("ListModels missing mapping_ids: %+v", list[0])
+	}
+
+	// 无效 mapping_id → 外键报错，改名与绑定都必须回滚
+	bad := []int64{9999}
+	if err := s.UpdateModel(ctx, m.ID, "SHOULD-NOT-APPLY", &bad); err == nil {
+		t.Fatal("invalid mapping_id must fail")
+	}
+	got, _ = s.GetModel(ctx, m.ID)
+	if got.Name != "glm-free-v2" || len(got.MappingIDs) != 2 {
+		t.Errorf("failed update must roll back entirely: %+v", got)
+	}
+
+	// 空数组 → 清空绑定，映射页视角同步
+	empty := []int64{}
+	if err := s.UpdateModel(ctx, m.ID, "glm-free-v2", &empty); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	got, _ = s.GetModel(ctx, m.ID)
+	if len(got.MappingIDs) != 0 || len(got.Mappings) != 0 {
+		t.Errorf("empty slice must clear bindings: %+v", got)
+	}
+	cands, _ := s.SelectModels(ctx, mpA.ID)
+	if len(cands) != 0 {
+		t.Errorf("cleared binding must not be callable: %+v", cands)
+	}
+
+	// 模型不存在 → ErrNotFound
+	if err := s.UpdateModel(ctx, 9999, "x", &empty); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing model should return ErrNotFound, got %v", err)
 	}
 }
 
@@ -693,7 +758,6 @@ func TestLogInsertListGetCleanup(t *testing.T) {
 		t.Fatalf("DeleteLogsBefore all: %v deleted=%d", err, deleted)
 	}
 }
-
 
 func TestMappingParameterOverrides(t *testing.T) {
 	s := openTest(t)

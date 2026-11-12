@@ -223,6 +223,130 @@ func TestModelsAPI(t *testing.T) {
 	readJSON(t, resp)
 }
 
+// 模型侧反向编辑绑定：PUT /api/models/{id} 带 mapping_ids 时全量替换该模型与标准名的绑定
+func TestModelAPIBindMappings(t *testing.T) {
+	env := newAdminEnv(t)
+	chID := env.createChannel(t, "zhipu", "http://x")
+
+	resp := env.call(t, http.MethodPost, "/api/models",
+		`{"channel_id":`+itoa(chID)+`,"name":"glm-free"}`)
+	v := readJSON(t, resp)
+	if resp.StatusCode != 201 {
+		t.Fatalf("create model: %d %v", resp.StatusCode, v)
+	}
+	modelID := int64(v["id"].(float64))
+
+	resp = env.call(t, http.MethodPost, "/api/mappings", `{"name":"glm-5.3"}`)
+	mpA := int64(readJSON(t, resp)["id"].(float64))
+	resp = env.call(t, http.MethodPost, "/api/mappings", `{"name":"claude-sonnet"}`)
+	mpB := int64(readJSON(t, resp)["id"].(float64))
+
+	// 从 /api/models 读取供编辑弹窗回显的 mapping_ids
+	idsOf := func() []int64 {
+		r := env.call(t, http.MethodGet, "/api/models", "")
+		list := readJSON(t, r)["data"].([]any)
+		raw, ok := list[0].(map[string]any)["mapping_ids"].([]any)
+		if !ok {
+			t.Fatalf("mapping_ids missing: %v", list[0])
+		}
+		out := make([]int64, 0, len(raw))
+		for _, x := range raw {
+			out = append(out, int64(x.(float64)))
+		}
+		return out
+	}
+	sameSet := func(got []int64, want ...int64) bool {
+		if len(got) != len(want) {
+			return false
+		}
+		set := map[int64]bool{}
+		for _, id := range got {
+			set[id] = true
+		}
+		for _, id := range want {
+			if !set[id] {
+				return false
+			}
+		}
+		return true
+	}
+	// 映射页视角：标准名绑定了哪些模型实体
+	boundOf := func(name string) []any {
+		r := env.call(t, http.MethodGet, "/api/mappings", "")
+		for _, row := range readJSON(t, r)["data"].([]any) {
+			m := row.(map[string]any)
+			if m["name"] == name {
+				return m["bound_models"].([]any)
+			}
+		}
+		t.Fatalf("mapping %q not found", name)
+		return nil
+	}
+
+	// 编辑模型时绑定两个标准名，映射页应同步看到
+	resp = env.call(t, http.MethodPut, "/api/models/"+itoa(modelID),
+		`{"name":"glm-free","mapping_ids":[`+itoa(mpA)+`,`+itoa(mpB)+`]}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("bind mappings: %d", resp.StatusCode)
+	}
+	readJSON(t, resp)
+	if ids := idsOf(); !sameSet(ids, mpA, mpB) {
+		t.Errorf("mapping_ids = %v, want [%d %d]", ids, mpA, mpB)
+	}
+	if n := len(boundOf("glm-5.3")); n != 1 {
+		t.Errorf("glm-5.3 bound models = %d, want 1", n)
+	}
+	if n := len(boundOf("claude-sonnet")); n != 1 {
+		t.Errorf("claude-sonnet bound models = %d, want 1", n)
+	}
+
+	// 只改名、不带 mapping_ids → 绑定保持不变
+	resp = env.call(t, http.MethodPut, "/api/models/"+itoa(modelID), `{"name":"glm-free-v2"}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("rename: %d", resp.StatusCode)
+	}
+	readJSON(t, resp)
+	if ids := idsOf(); !sameSet(ids, mpA, mpB) {
+		t.Errorf("rename must keep bindings: %v", ids)
+	}
+
+	// 无效 mapping_id → 400，且改名与绑定都不能留下半成品
+	resp = env.call(t, http.MethodPut, "/api/models/"+itoa(modelID),
+		`{"name":"glm-free-v3","mapping_ids":[9999]}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 400 {
+		t.Errorf("invalid mapping_ids: %d", resp.StatusCode)
+	}
+	if ids := idsOf(); !sameSet(ids, mpA, mpB) {
+		t.Errorf("failed update must not touch bindings: %v", ids)
+	}
+	got, _ := env.st.GetModel(context.Background(), modelID)
+	if got == nil || got.Name != "glm-free-v2" {
+		t.Errorf("failed update must roll back rename: %+v", got)
+	}
+
+	// 空数组 → 清空绑定
+	resp = env.call(t, http.MethodPut, "/api/models/"+itoa(modelID),
+		`{"name":"glm-free-v2","mapping_ids":[]}`)
+	if resp.StatusCode != 200 {
+		t.Fatalf("clear: %d", resp.StatusCode)
+	}
+	readJSON(t, resp)
+	if ids := idsOf(); len(ids) != 0 {
+		t.Errorf("empty mapping_ids must clear bindings: %v", ids)
+	}
+	if n := len(boundOf("glm-5.3")); n != 0 {
+		t.Errorf("glm-5.3 bound models = %d, want 0", n)
+	}
+
+	// 模型不存在 → 404
+	resp = env.call(t, http.MethodPut, "/api/models/9999", `{"name":"x","mapping_ids":[]}`)
+	readJSON(t, resp)
+	if resp.StatusCode != 404 {
+		t.Errorf("missing model: %d", resp.StatusCode)
+	}
+}
+
 func TestMappingsAPI(t *testing.T) {
 	env := newAdminEnv(t)
 	chID := env.createChannel(t, "zhipu", "http://x")

@@ -34,6 +34,7 @@
 - **sql.DB 必须 SetMaxOpenConns(1)**（单写者 + :memory: 测试安全）
 - **旧库迁移**：检测到 `model_aliases` 时 DROP 重建 `models/model_aliases/channel_models/channels`，保留 tokens/request_logs；普通新增列用 `ensureColumn` 幂等补列
 - **数据模型是三级结构**：`channels 1─n models(模型实体) n─n model_mappings(标准名)`；渠道只与模型实体关联，标准名只与模型实体关联；context_length/max_output_tokens/parameter_overrides 参数放在标准名侧
+- **绑定关系可双向编辑**：映射页 `PUT /api/mappings/{id}` 的 `model_ids` 按标准名维度全量替换；模型页 `PUT /api/models/{id}` 的 `mapping_ids`（`*[]int64`，nil=不动绑定、非 nil 含空数组=全量替换）按模型维度全量替换，`GET /api/models` 返回 `mapping_ids` 供回显。改名与绑定替换在同一事务内，失败整体回滚（无效 id 返回 400、模型不存在返回 404）。`POST /api/models` 创建是幂等的（重名返回已有实体），**不接受** `mapping_ids`，避免误改已有模型的绑定
 - **强制参数覆盖**：`model_mappings.parameter_overrides`（JSON 文本列，旧库 ensureColumn 补列）存标准名侧强制覆盖参数（如 temperature 固定为 1）；转发时覆盖客户端同名字段，对所有降级候选生效，model 字段除外（始终被替换）
 - **渠道协议与额度类型分离**：`channels.type` 是转发协议；`channels.quota_type` 是额度查询类型（空/openrouter/kimi/deepseek）。额度通过 `GET /api/channels/{id}/quota` 实时查询，不落库；预设接口见 `internal/admin/quotas.go`
 - **请求匹配**：客户端 model 与标准名大小写敏感精确匹配（无别名），未命中返回 404 → 展开绑定的模型实体，按渠道 priority DESC、模型 id ASC 逐个尝试；无可用模型返回 503
