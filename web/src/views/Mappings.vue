@@ -65,11 +65,24 @@
     </a-form>
   </a-modal>
 
-  <!-- 绑定模型弹窗 -->
+  <!-- 绑定模型弹窗：按请求进来后实际尝试的顺序展示 -->
   <a-modal v-model:open="mappingModelsDlgOpen" :title="'绑定模型：' + mappingModelsDlg.name" :footer="null">
+    <p class="dim" style="margin: 0 0 10px">
+      顺序 = 请求进来后实际尝试顺序：渠道优先级高者优先，同渠道按模型 ID 升序；渠道已禁用的模型不参与调用，排在末尾。
+    </p>
     <a-table :scroll="{ x: 'max-content' }" :data-source="mappingModelsDlg.models" :columns="boundColumns" row-key="id" :pagination="false" size="small">
       <template #bodyCell="{ column, record: m }">
-        <template v-if="column.key === 'name'"><span class="mono">{{ m.name }}</span></template>
+        <template v-if="column.key === 'order'">
+          <span v-if="m.order" class="order-num">{{ m.order }}</span>
+          <span v-else class="dim">-</span>
+        </template>
+        <template v-else-if="column.key === 'name'">
+          <span class="mono" :class="{ dim: !m.channel_enabled }">{{ m.name }}</span>
+        </template>
+        <template v-else-if="column.key === 'channel'">
+          {{ m.channel_name }}
+          <span v-if="!m.channel_enabled" class="err" style="margin-left: 6px; font-size: 12px">渠道已禁用</span>
+        </template>
       </template>
     </a-table>
   </a-modal>
@@ -92,9 +105,11 @@ const columns = [
   { title: '操作', key: 'ops', width: 120 },
 ]
 const boundColumns = [
+  { title: '调用顺序', key: 'order', width: 90 },
   { title: 'ID', dataIndex: 'id', width: 60 },
   { title: '模型', key: 'name' },
-  { title: '所属渠道', dataIndex: 'channel_name' },
+  { title: '所属渠道', key: 'channel' },
+  { title: '渠道优先级', dataIndex: 'channel_priority', width: 100 },
 ]
 
 const mappingModelGroups = computed(() => {
@@ -194,7 +209,12 @@ const mappingModelsDlg = reactive({ name: '', models: [] })
 
 function showMappingModels(m) {
   mappingModelsDlg.name = m.name
-  mappingModelsDlg.models = m.bound_models || []
+  // 后端已按 c.enabled DESC, c.priority DESC, m.id ASC 排好；这里只给参与调用的项编号
+  let rank = 0
+  mappingModelsDlg.models = (m.bound_models || []).map(b => {
+    const enabled = b.channel_enabled !== false // 兼容尚未返回该字段的旧版后端
+    return { ...b, channel_enabled: enabled, order: enabled ? ++rank : null }
+  })
   mappingModelsDlgOpen.value = true
 }
 

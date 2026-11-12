@@ -11,11 +11,13 @@ import (
 // ErrNotFound 更新对象不存在（由 RowsAffected=0 判定）
 var ErrNotFound = errors.New("store: not found")
 
-// BoundModel 映射绑定的一个模型实体（附渠道名，供管理端展示）
+// BoundModel 映射绑定的一个模型实体（附渠道名/优先级/启用状态，供管理端按真实调用顺序展示）
 type BoundModel struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	ChannelName string `json:"channel_name"`
+	ID              int64  `json:"id"`
+	Name            string `json:"name"`
+	ChannelName     string `json:"channel_name"`
+	ChannelPriority int    `json:"channel_priority"`
+	ChannelEnabled  bool   `json:"channel_enabled"`
 }
 
 // Mapping 模型映射（标准名）：请求入口，携带上下文参数，须绑定 ≥1 个模型实体才可被请求到。
@@ -171,13 +173,18 @@ func (s *Store) ListMappings(ctx context.Context) ([]Mapping, error) {
 	return out, nil
 }
 
+// boundModelsOf 返回管理端展示用的绑定列表，顺序与 SelectModels 的真实调用顺序对齐：
+// 启用渠道按优先级 DESC、模型 id ASC，禁用渠道的模型排在末尾。
+// 注意：这里不能过滤禁用渠道——编辑映射时 model_ids 由该列表生成并整体替换，
+// 过滤会导致用户在编辑页保存时误删禁用渠道下的绑定。
 func (s *Store) boundModelsOf(ctx context.Context, mappingID int64) ([]BoundModel, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.id, m.name, c.name
+		SELECT m.id, m.name, c.name, c.priority, c.enabled
 		FROM model_mapping_models mm
 		JOIN models m ON m.id = mm.model_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE mm.mapping_id=? ORDER BY m.id`, mappingID)
+		WHERE mm.mapping_id=?
+		ORDER BY c.enabled DESC, c.priority DESC, m.id ASC`, mappingID)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +192,7 @@ func (s *Store) boundModelsOf(ctx context.Context, mappingID int64) ([]BoundMode
 	out := []BoundModel{}
 	for rows.Next() {
 		var b BoundModel
-		if err := rows.Scan(&b.ID, &b.Name, &b.ChannelName); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &b.ChannelName, &b.ChannelPriority, &b.ChannelEnabled); err != nil {
 			return nil, err
 		}
 		out = append(out, b)

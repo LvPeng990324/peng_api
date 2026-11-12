@@ -25,6 +25,19 @@ pre {
 .token-full { font-size: 14px; user-select: all; }
 .ch-remark { font-size: 11px; color: #94a3b8; line-height: 1.3; margin-top: 2px; word-break: break-all; }
 
+/* 绑定模型弹窗里的调用顺序序号 */
+.order-num {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: rgba(59, 130, 246, .18);
+  color: #93c5fd;
+  text-align: center;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+
 /* ============ 登录页 ============ */
 .login-wrap {
   display: flex;

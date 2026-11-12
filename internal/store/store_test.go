@@ -423,6 +423,58 @@ func TestSelectModelsOrderAndDisabledSkip(t *testing.T) {
 	}
 }
 
+// 管理端「绑定模型」列表的顺序必须与请求进来后实际尝试的顺序一致；
+// 同时不能丢掉禁用渠道下的绑定（编辑映射时 model_ids 来自该列表并全量替换）。
+func TestBoundModelsFollowCallOrder(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+
+	low, _ := s.CreateChannel(ctx, Channel{Name: "low", Type: "openai", BaseURL: "http://low", APIKey: "k", Priority: 1})
+	high, _ := s.CreateChannel(ctx, Channel{Name: "high", Type: "openai", BaseURL: "http://high", APIKey: "k", Priority: 10})
+	off, _ := s.CreateChannel(ctx, Channel{Name: "off", Type: "openai", BaseURL: "http://off", APIKey: "k", Priority: 100})
+	mLow, _ := s.CreateModel(ctx, low.ID, "glm-low")
+	mHigh1, _ := s.CreateModel(ctx, high.ID, "glm-high-1")
+	mHigh2, _ := s.CreateModel(ctx, high.ID, "glm-high-2")
+	mOff, _ := s.CreateModel(ctx, off.ID, "glm-off")
+	s.SetChannelEnabled(ctx, off.ID, false)
+
+	// 绑定顺序刻意与调用顺序相反
+	mp, err := s.CreateMapping(ctx, "glm-5.3", nil, nil,
+		[]int64{mLow.ID, mOff.ID, mHigh2.ID, mHigh1.ID}, nil)
+	if err != nil {
+		t.Fatalf("CreateMapping: %v", err)
+	}
+
+	cands, err := s.SelectModels(ctx, mp.ID)
+	if err != nil {
+		t.Fatalf("SelectModels: %v", err)
+	}
+	list, err := s.ListMappings(ctx)
+	if err != nil {
+		t.Fatalf("ListMappings: %v", err)
+	}
+
+	for _, bound := range [][]BoundModel{mp.BoundModels, list[0].BoundModels} {
+		if len(bound) != 4 {
+			t.Fatalf("禁用渠道的绑定必须保留，got %d: %+v", len(bound), bound)
+		}
+		// 前 len(cands) 项逐项对齐真实调用顺序
+		for i, c := range cands {
+			if bound[i].Name != c.ModelName || bound[i].ChannelName != c.Channel.Name {
+				t.Errorf("bound[%d] = %s/%s, want %s/%s", i, bound[i].ChannelName, bound[i].Name, c.Channel.Name, c.ModelName)
+			}
+			if bound[i].ChannelPriority != c.Channel.Priority || !bound[i].ChannelEnabled {
+				t.Errorf("bound[%d] channel meta = %d/%v, want %d/true",
+					i, bound[i].ChannelPriority, bound[i].ChannelEnabled, c.Channel.Priority)
+			}
+		}
+		// 禁用渠道排在末尾，且仍带着启用状态标记
+		if last := bound[len(bound)-1]; last.Name != "glm-off" || last.ChannelEnabled || last.ChannelPriority != 100 {
+			t.Errorf("disabled channel model should be last and marked disabled: %+v", last)
+		}
+	}
+}
+
 func TestMappingCRUDAndResolve(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
