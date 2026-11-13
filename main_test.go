@@ -129,3 +129,44 @@ func readAll(t *testing.T, resp *http.Response) string {
 	b, _ := io.ReadAll(resp.Body)
 	return string(b)
 }
+
+func TestStartupMarksInterruptedProcessingLogs(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	st.InsertLog(ctx, store.LogEntry{
+		RequestID: "req-live", Attempt: 1, ModelRequested: "m1",
+		Status: store.LogStatusProcessing, CreatedAt: time.Now().UTC().Add(-time.Hour),
+	})
+	st.InsertLog(ctx, store.LogEntry{
+		RequestID: "req-done", Attempt: 1, ModelRequested: "m1",
+		Status: store.LogStatusSuccess, CreatedAt: time.Now().UTC().Add(-time.Hour),
+	})
+
+	markInterrupted(st, time.Now().UTC(), "interrupted (server restarted)")
+
+	logs, total, _ := st.ListLogs(ctx, store.LogFilter{Page: 1, Size: 10})
+	if total != 2 {
+		t.Fatalf("startup sweep must not delete rows: total=%d", total)
+	}
+	var live, done *store.LogEntry
+	for i := range logs {
+		if logs[i].RequestID == "req-live" {
+			live = &logs[i]
+		} else {
+			done = &logs[i]
+		}
+	}
+	if live == nil || done == nil {
+		t.Fatalf("missing rows: %+v", logs)
+	}
+	if live.Status != store.LogStatusFailed || live.Error != "interrupted (server restarted)" {
+		t.Errorf("processing row not finalized: %+v", live)
+	}
+	if done.Status != store.LogStatusSuccess || done.Error != "" {
+		t.Errorf("finished row must stay untouched: %+v", done)
+	}
+}

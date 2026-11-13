@@ -7,12 +7,12 @@
       <a-radio-group v-model:value="state.sel" style="margin-bottom: 10px">
         <a-radio-button v-for="a in state.attempts" :key="a.id" :value="a.id">
           第{{ a.attempt }}次 {{ a.channel_name }}
-          <span :style="{ color: a.status === 'success' ? '#52c41a' : '#f87171' }">{{ a.status }}</span>
+          <span :style="{ color: statusTextColor(a.status) }">{{ statusLabel(a.status) }}</span>
         </a-radio-button>
       </a-radio-group>
       <template v-if="selAttempt">
         <p class="logs-detail-meta">
-          HTTP {{ selAttempt.http_status ?? '-' }} · 耗时 {{ fmtDur(selAttempt.latency_ms) }}<template v-if="selAttempt.first_byte_ms > 0"> · 首字 {{ fmtDur(selAttempt.first_byte_ms) }}</template> ·
+          HTTP {{ selAttempt.http_status ?? '-' }} · <template v-if="selAttempt.status === 'processing'">进行中</template><template v-else>耗时 {{ fmtDur(selAttempt.latency_ms) }}</template><template v-if="selAttempt.first_byte_ms > 0"> · 首字 {{ fmtDur(selAttempt.first_byte_ms) }}</template> ·
           {{ selAttempt.stream ? '流式' : '非流式' }} · {{ fmtTime(selAttempt.created_at) }}
           · agent {{ selAttempt.agent || '-' }}
           <template v-if="selAttempt.prompt_tokens != null"> · tokens {{ fmtTokens(selAttempt) }}</template>
@@ -23,10 +23,13 @@
         <pre>{{ pretty(selAttempt.request_body) }}</pre>
         <h4>
           响应体
-          <a class="td-link" @click="state.viewRaw = !state.viewRaw">{{ state.viewRaw ? '查看拼接' : '查看原文' }}</a>
-          <a class="td-link" @click="copyText(state.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body))">复制</a>
+          <template v-if="selAttempt.status !== 'processing'">
+            <a class="td-link" @click="state.viewRaw = !state.viewRaw">{{ state.viewRaw ? '查看拼接' : '查看原文' }}</a>
+            <a class="td-link" @click="copyText(state.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body))">复制</a>
+          </template>
         </h4>
-        <pre>{{ state.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body) }}</pre>
+        <pre v-if="selAttempt.status === 'processing'">请求处理中，暂无响应体</pre>
+        <pre v-else>{{ state.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body) }}</pre>
       </template>
     </a-spin>
   </a-modal>
@@ -37,7 +40,7 @@ import { computed, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { api } from '../api'
 import { guard } from '../store'
-import { fmtDur, fmtTime, fmtTokens, pretty, sseText, tokSpeed } from '../utils'
+import { fmtDur, fmtTime, fmtTokens, pretty, sseText, statusLabel, statusTextColor, tokSpeed } from '../utils'
 
 const visible = ref(false)
 const state = reactive({ data: null, attempts: [], sel: null, viewRaw: false, loading: false })

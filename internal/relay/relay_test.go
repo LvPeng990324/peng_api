@@ -735,3 +735,197 @@ func TestEngineParameterOverrides(t *testing.T) {
 		t.Errorf("override cleared but param not passed through: %s", up.lastBody())
 	}
 }
+
+// ---- processing 日志：请求进入即可见，结束时原地更新 ----
+
+func TestEngineProcessingLogVisibleBeforeResponse(t *testing.T) {
+	arrived := make(chan struct{}, 1)
+	release := make(chan struct{}, 1)
+	unblock := func() {
+		select {
+		case release <- struct{}{}:
+		default:
+		}
+	}
+	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case arrived <- struct{}{}:
+		default:
+		}
+		<-release
+		time.Sleep(10 * time.Millisecond) // 保证 latency 取整后非 0，断言才有意义
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"pong"}}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`)
+	})
+	defer up.close()
+	defer unblock() // 断言失败时也要放走上游，避免 httptest.Server.Close 卡住
+
+	env := newTestEnv(t, 5*time.Second)
+	_, m := env.addModel(t, "up", up.url(), 1, "m1-free")
+	env.addMapping(t, "m1", m.ID)
+
+	done := make(chan *http.Response, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPost, env.client.URL+"/v1/chat/completions",
+			strings.NewReader(`{"model":"m1","messages":[]}`))
+		req.Header.Set("Authorization", "Bearer "+env.tok.Token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- nil
+			return
+		}
+		done <- resp
+	}()
+
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("upstream did not receive request")
+	}
+
+	// 上游仍阻塞、客户端响应尚未写出：日志页此刻必须已能看到一条 processing
+	logs, total, err := env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
+	if err != nil || total != 1 {
+		t.Fatalf("processing row must exist before response: total=%d err=%v", total, err)
+	}
+	live := logs[0]
+	if live.Status != store.LogStatusProcessing {
+		t.Errorf("status = %q, want processing", live.Status)
+	}
+	if live.RequestID == "" || live.ModelRequested != "m1" || live.ModelActual != "m1-free" {
+		t.Errorf("processing row missing request context: %+v", live)
+	}
+	// 列表视图不带 body 列，请求体/响应体要从详情视图验证
+	fullLive, err := env.st.GetLog(context.Background(), live.ID)
+	if err != nil || fullLive == nil {
+		t.Fatalf("GetLog: %v %+v", err, fullLive)
+	}
+	if fullLive.RequestBody == "" || fullLive.ResponseBody != "" || fullLive.LatencyMS != 0 {
+		t.Errorf("processing row must carry request body only: %+v", fullLive)
+	}
+	if live.CreatedAt.IsZero() {
+		t.Error("processing row must have a start timestamp")
+	}
+
+	unblock()
+	resp := <-done
+	if resp == nil {
+		t.Fatal("chat request failed")
+	}
+	if resp.StatusCode != 200 || !strings.Contains(readBody(t, resp), "pong") {
+		t.Fatalf("chat: %d", resp.StatusCode)
+	}
+
+	// 结束后更新同一行，不新增行、不改请求开始时间
+	logs, total, err = env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
+	if err != nil || total != 1 {
+		t.Fatalf("must not add a row: total=%d err=%v", total, err)
+	}
+	got := logs[0]
+	if got.ID != live.ID {
+		t.Errorf("must update the same row: %d vs %d", got.ID, live.ID)
+	}
+	if got.Status != store.LogStatusSuccess {
+		t.Errorf("final status = %q", got.Status)
+	}
+	fullGot, err := env.st.GetLog(context.Background(), got.ID)
+	if err != nil || fullGot == nil {
+		t.Fatalf("GetLog: %v %+v", err, fullGot)
+	}
+	if fullGot.ResponseBody == "" || got.LatencyMS <= 0 {
+		t.Errorf("response/latency not backfilled: %+v", fullGot)
+	}
+	if got.PromptTokens == nil || *got.PromptTokens != 3 {
+		t.Errorf("usage not backfilled: %+v", got.PromptTokens)
+	}
+	if got.CreatedAt.Unix() != live.CreatedAt.Unix() {
+		t.Error("created_at must stay at request start")
+	}
+}
+
+func TestEngineNoProcessingLeftOnFailure(t *testing.T) {
+	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(502)
+	})
+	defer up.close()
+
+	env := newTestEnv(t, 5*time.Second)
+	_, m := env.addModel(t, "up", up.url(), 1, "m1")
+	env.addMapping(t, "m1", m.ID)
+
+	readBody(t, env.chat(t, `{"model":"m1","messages":[]}`))
+	logs, total, _ := env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
+	if total != 1 || logs[0].Status != store.LogStatusFailed {
+		t.Fatalf("failed attempt must be finalized: total=%d %+v", total, logs)
+	}
+	rows, n, _ := env.st.ListLogs(context.Background(),
+		store.LogFilter{Status: store.LogStatusProcessing, Page: 1, Size: 10})
+	if n != 0 || len(rows) != 0 {
+		t.Errorf("processing rows must not leak: total=%d", n)
+	}
+}
+
+func TestFinishLogGuardsUnfinishedStatus(t *testing.T) {
+	// panic 被 Recoverer 兜住时 defer 仍执行：终态可能没写，也可能还停在 processing
+	for _, tc := range []struct{ name, status string }{
+		{"empty status", ""},
+		{"still processing", store.LogStatusProcessing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer st.Close()
+			e := NewEngine(st, provider.NewRegistry())
+			ctx := context.Background()
+
+			entry := store.LogEntry{RequestID: "req-panic", Attempt: 1, ModelRequested: "m1", ModelActual: "m1", RequestBody: "{}"}
+			id := e.startLog(&entry)
+			if id == 0 {
+				t.Fatal("startLog must insert a processing row")
+			}
+			entry.Status = tc.status
+			e.finishLog(id, &entry)
+
+			got, err := st.GetLog(ctx, id)
+			if err != nil || got == nil {
+				t.Fatalf("GetLog: %v %+v", err, got)
+			}
+			if got.Status != store.LogStatusFailed || !strings.Contains(got.Error, "interrupted") {
+				t.Errorf("unfinished status must become failed/interrupted: %+v", got)
+			}
+			_, total, _ := st.ListLogs(ctx, store.LogFilter{Page: 1, Size: 10})
+			if total != 1 {
+				t.Errorf("must not add a row: total=%d", total)
+			}
+		})
+	}
+}
+
+func TestFinishLogFallsBackToInsert(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer st.Close()
+	e := NewEngine(st, provider.NewRegistry())
+	ctx := context.Background()
+
+	// startLog 写失败（id=0）时，结束时仍要补一条完整记录
+	entry := store.LogEntry{
+		RequestID: "req-fallback", Attempt: 1, ModelRequested: "m1", ModelActual: "m1",
+		Status: store.LogStatusSuccess, ResponseBody: "ok", LatencyMS: 42,
+		CreatedAt: time.Now().UTC(),
+	}
+	e.finishLog(0, &entry)
+
+	logs, total, _ := st.ListLogs(ctx, store.LogFilter{Page: 1, Size: 10})
+	full, err := st.GetLog(ctx, logs[0].ID)
+	if err != nil || full == nil {
+		t.Fatalf("GetLog: %v %+v", err, full)
+	}
+	if total != 1 || full.Status != store.LogStatusSuccess || full.ResponseBody != "ok" {
+		t.Errorf("fallback insert: total=%d %+v", total, full)
+	}
+}

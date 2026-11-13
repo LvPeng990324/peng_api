@@ -26,14 +26,14 @@ func finishStream(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntr
 		entry.Status = status
 		entry.Error = errMsg
 		entry.ResponseBody = acc.String()
-		if status == "success" {
+		if status == store.LogStatusSuccess {
 			entry.PromptTokens, entry.CompletionTokens, entry.PromptCacheHitTokens = parseUsageSSE(acc.String())
 		}
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		complete("failed", "streaming unsupported by response writer")
+		complete(store.LogStatusFailed, "streaming unsupported by response writer")
 		return
 	}
 
@@ -42,7 +42,7 @@ func finishStream(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntr
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			if _, werr := w.Write(line); werr != nil {
-				complete("failed", "client disconnected: "+werr.Error())
+				complete(store.LogStatusFailed, "client disconnected: "+werr.Error())
 				return
 			}
 			flusher.Flush()
@@ -50,9 +50,9 @@ func finishStream(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntr
 		}
 		if err != nil {
 			if err == io.EOF {
-				complete("success", "")
+				complete(store.LogStatusSuccess, "")
 			} else {
-				complete("failed", "stream interrupted: "+err.Error())
+				complete(store.LogStatusFailed, "stream interrupted: "+err.Error())
 			}
 			return
 		}

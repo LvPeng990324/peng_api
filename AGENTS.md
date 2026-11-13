@@ -45,9 +45,12 @@
 - **发往上游的 model 字段总是被替换**为模型实体的 name（上游真实模型名）
 - **上游 4xx（除 429）不重试**，原样透传；5xx/429/网络错误/超时才降级到下一模型
 - **流式**：写出响应头后不再降级；客户端断开只记日志；日志 response_body 存拼接后的完整 SSE 文本
-- **日志按上游尝试记录**：每次尝试一行，request_id（UUID）归组同次客户端请求；启动时及每 24h 清理过期日志
+- **日志按上游尝试记录，且请求进入即可见**：每次尝试一行，request_id（UUID）归组同次客户端请求；`startLog` 在发往上游前先 INSERT 一行 `status=processing`，`tryCandidate` 的 defer 用 `finishLog` → `store.UpdateLog` **原地回填同一行**终态，不新增行。状态常量在 `store`（`LogStatusProcessing/Success/Failed`），中断统一记 `failed` + error、不设独立状态；`created_at` 语义是**请求开始时间**（不再是响应结束时间），`UpdateLog` 只更新响应侧列、不改写它，时间范围筛选与保留清理都按这个时间；启动时及每 24h 清理过期日志
 - **日志模型三列**：`model_requested`（客户端原始名）/`model_canonical`（命中标准名）/`model_actual`（本次尝试发往上游的模型实体名，由 engine 写入 cand.ModelName）；`model_actual` 对旧库用 ensureColumn 幂等补列，历史日志为空串，模型模糊筛选同时匹配三列；日志页模型列主行显示标准名、下方用 `.ch-remark` 灰色小字显示实际名
-- **DB 写日志用脱离请求 ctx 的 detached ctx（5s 超时）**，防止客户端断开丢日志
+- **DB 写日志用脱离请求 ctx 的 detached ctx**：起始写 `startLog` 用 2s（落在请求关键路径），收口写 `finishLog` 用 5s，防止客户端断开丢日志；起始写失败只记日志并返回 id=0，收口时回落 INSERT 补一条完整记录；`UpdateLog` 返回 `ErrNotFound`（行已被清理删掉）时同样回落 INSERT
+- **僵尸 processing 行必须收口**：kill -9 / 收口写超时都会留下无终态的行；启动时 `markInterrupted(now, "interrupted (server restarted)")` 清掉上次进程全部遗留，`startLogJanitor` 每 1min 调 `store.MarkInterrupted(now-10min, "interrupted (timeout)")` 清超时行（流式无总超时，阈值宁大勿小）；panic 被 Recoverer 兜住时 defer 仍执行，`finishLog` 把空状态或仍为 `processing` 都兜底成 `failed/interrupted`
+- **日志页实时性**：`Logs.vue` 3s 静默轮询（不置 loading、in-flight 防重入），仅第 1 页生效，提供「自动刷新」开关，`document.hidden` 暂停、切回可见立即刷一次，`onUnmounted` 清 timer 与事件监听；`processing` 行没有 `latency_ms`，「已运行」由 `created_at` + 前端本地时钟（`utils.js` 的 `fmtElapsed`）算出；状态标签/颜色/文案统一走 `utils.js` 的 `statusLabel`/`statusTagColor`/`statusTextColor`
+- **早期失败不记日志**：401（在 `auth.Bearer` 中间件）、请求体解析 400、`model not found` 404、无可用模型 503 都在 `run` 之前返回，维持不落日志；日志表只含真实上游尝试，`newUUID()` 保持在 `handler.go` 解析成功之后
 - **日志 `agent` 字段**记录下游调用方：`X-Client-Name` 请求头优先，缺省回落 `User-Agent`
 - 客户端错误格式 `{"error":{"message","type","code"}}`；管理 API `{"error":"..."}`
 - 管理端 session 在内存中，重启失效是预期行为；Token 响应统一用 `tokenView`（列表 `maskedTokenView` 打码，创建与详情 `fullTokenView` 给完整值）
@@ -64,13 +67,13 @@
 - **HTTP 响应与内部错误只有一处实现** `internal/httpx`：`JSON` / `Error`（管理端）/ `OpenAIError`（`/v1`）/ `DecodeAdminJSON` / `InternalError` / `InternalOpenAIError`；内部错误统一记日志、不回显细节，admin 不再有委托别名
 - **store 错误类型化且按错误码分类**：`ErrNotFound` / `ErrConflict` / `ErrInvalidReference`；`classifyConstraintErr` 用 `errors.As` 取 `*sqlite.Error.Code()`（`SQLITE_CONSTRAINT_UNIQUE` / `FOREIGNKEY`），不看错误文本；上层用 `errors.Is` 决定 400/404/500
 - **配置/启动期 fail-fast**：`envOrInt` 非法数值返回 error；`web/index.html` 缺失 panic；`rand.Read` 错误上抛；`channelInput.validate` 用 `Registry.Has` 挡住未知协议
-- **重试循环职责分离**：`dispatch` 只被 `run` / `tryCandidate` 看见；辅助函数（`transportFailure` / `writeSuccess` / `httpFailure`）返回 `attemptResult{done, failure}`，不接触全知上下文；`finishStream` 只回填 entry，日志统一由 `tryCandidate` 的 defer 落盘（流式与非流式同一条路径）
+- **重试循环职责分离**：`dispatch` 只被 `run` / `tryCandidate` 看见；辅助函数（`transportFailure` / `writeSuccess` / `httpFailure`）返回 `attemptResult{done, failure}`，不接触全知上下文；`finishStream` 只回填 entry，起始行由 `startLog` 在 `p.Chat` 之前写入、终态统一由 `tryCandidate` 的 defer 回填（流式与非流式同一条路径）
 - **协议层不认识 DB 实体**：`Provider` 只收 `Endpoint{BaseURL, APIKey}`，`Chat/ListModels` 返回 `(Result, error)`，2xx 走 `Result.OK()`；`Chat` 拆成 `chatNonStream` / `chatStream` 两条路径
 - **请求体只解析一次且 stream 单一真相源**：`requestBody` 只存 `model` 与 `fields`，`isStream()` 从 fields 读；`applyOverrides` 改 map、`bytesFor` 只替换 model，保证上游 body 与 provider 的 Stream 开关一致
-- **store 单一列清单**：`logColumns` 派生 INSERT / SELECT / Scan 目标（`logValues` / `logTargets`），`schema_test.go` 校验对齐；补列用静态 `addedColumns` 表 + 一致性测试，不在生产代码里解析 DDL；`replaceBindings` 双向复用；`CreateMapping` / `UpdateMapping` 收 `MappingInput` 配置对象（调用点只写非零字段）
+- **store 单一列清单**：`logColumns` 派生 INSERT / SELECT / Scan 目标（`logValues` / `logTargets`），`schema_test.go` 校验对齐；补列用静态 `addedColumns` 表 + 一致性测试，不在生产代码里解析 DDL；`replaceBindings` 双向复用；`CreateMapping` / `UpdateMapping` 收 `MappingInput` 配置对象（调用点只写非零字段）；`UpdateLog` 只更新响应侧列，请求侧字段与 `created_at` 在 INSERT 时定死
 - **转发候选是精简视图**：`Candidate` 用 `ChannelRef`（ID/Name/Type/BaseURL/APIKey），不带仅测试需要的字段；`/v1/models` 用 `PublicModel`
 - **admin 按依赖差异分组**：`Handler` 只是组合根，只拆 `authAPI`（session）/ `dataAPI`（纯 CRUD）/ `channelAPI`（+ providers）/ `quotaAPI`（+ quotaService）四类，共用一个 `storeAPI`；`storeAPI.loadChannel` 返回 `(渠道, bool)`；分页归一化只在 `LogFilter.Normalize`
 - **admin DTO 与状态**：`channelInput.toChannel` 是输入→实体的唯一转换；`tokenView` 是 Token 唯一响应形状；`quotaService.urlFor` 默认取 `quotaSources`，测试用 `setURL` 只登记覆盖项
 - **额度类型单一注册点** `admin/quotaSources`：白名单、fetch 分发、`GET /api/quota-types` 下拉从此派生
-- **main 只做装配**：日志清理调度抽到 `startLogCleaner(ctx, st, retentionDays)`；超时/周期提为命名常量
-- **前端分层**：`state.js`（reactive 状态）/ `selectors.js`（派生数据）/ `resources.js`（`ensureLoaded` 幂等加载），`store.js` 只 re-export；`api.js` 不持有全局回调；`resources.js` 的 `reportError` 负责错误反馈与 401 登出，`guard` 返回 fn 结果让调用方感知失败，`loadInitial` 用 `loaded` 标记返回就绪状态；各页弹窗都在 `components/`；日志格式化集中在 `utils.js`
+- **main 只做装配**：过期日志清理抽到 `startLogCleaner(ctx, st, retentionDays)`，僵尸行收口抽到 `markInterrupted(...)` / `startLogJanitor(ctx, st)`；超时/周期提为命名常量
+- **前端分层**：`state.js`（reactive 状态）/ `selectors.js`（派生数据）/ `resources.js`（`ensureLoaded` 幂等加载），`store.js` 只 re-export；`api.js` 不持有全局回调；`resources.js` 的 `reportError` 负责错误反馈与 401 登出，`guard` 返回 fn 结果让调用方感知失败，`loadInitial` 用 `loaded` 标记返回就绪状态；各页弹窗都在 `components/`；日志格式化（含状态三态与 processing 本地计时）集中在 `utils.js`

@@ -791,3 +791,26 @@ func TestMappingsAPIParameterOverrides(t *testing.T) {
 		t.Errorf("overrides should be cleared: %+v", mps[0].ParameterOverrides)
 	}
 }
+
+func TestLogsAPIProcessingFilter(t *testing.T) {
+	env := newAdminEnv(t)
+	ctx := context.Background()
+	env.st.InsertLog(ctx, store.LogEntry{
+		RequestID: "req-live", Attempt: 1, ModelRequested: "m1", ModelActual: "m1-free",
+		ChannelName: "c1", Status: store.LogStatusProcessing, RequestBody: "{}",
+	})
+	env.st.InsertLog(ctx, store.LogEntry{
+		RequestID: "req-done", Attempt: 1, ModelRequested: "m1", ModelActual: "m1-free",
+		ChannelName: "c1", Status: store.LogStatusSuccess,
+	})
+
+	resp := env.call(t, http.MethodGet, "/api/logs?status=processing", "")
+	v := readJSON(t, resp)
+	if resp.StatusCode != 200 || v["total"].(float64) != 1 {
+		t.Fatalf("processing filter: %d %v", resp.StatusCode, v)
+	}
+	list := v["data"].([]any)
+	if len(list) != 1 || list[0].(map[string]any)["status"] != store.LogStatusProcessing {
+		t.Errorf("processing row not returned: %v", list)
+	}
+}

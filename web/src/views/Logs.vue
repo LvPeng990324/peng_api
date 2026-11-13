@@ -6,6 +6,7 @@
     <a-form-item>
       <a-select v-model:value="logFilter.status" placeholder="全部状态" allow-clear style="width: 120px">
         <a-select-option value="success">success</a-select-option>
+        <a-select-option value="processing">processing</a-select-option>
         <a-select-option value="failed">failed</a-select-option>
       </a-select>
     </a-form-item>
@@ -28,6 +29,9 @@
     <a-form-item>
       <a-button type="primary" html-type="submit" :loading="logsLoading" @click="searchLogs">查询</a-button>
     </a-form-item>
+    <a-form-item>
+      <a-checkbox v-model:checked="autoRefresh" @change="onAutoRefreshChange">自动刷新（仅首页）</a-checkbox>
+    </a-form-item>
   </a-form>
 
   <a-table :scroll="{ x: 'max-content' }" :data-source="logs.data" :columns="columns" row-key="id" :pagination="false" size="middle" :loading="logsLoading">
@@ -45,11 +49,14 @@
       <template v-else-if="column.key === 'token_name'">{{ l.token_name || '-' }}</template>
       <template v-else-if="column.key === 'agent'">{{ l.agent || '-' }}</template>
       <template v-else-if="column.key === 'status'">
-        <a-tag :color="l.status === 'success' ? 'success' : 'error'">{{ l.status }}</a-tag>
+        <a-tag :color="statusTagColor(l.status)">{{ statusLabel(l.status) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'http_status'">{{ l.http_status ?? '-' }}</template>
       <template v-else-if="column.key === 'latency_ms'">
-        <div class="latency-cell">
+        <div v-if="l.status === 'processing'" class="latency-cell">
+          <div>已运行 {{ fmtElapsed(l.created_at, now) }}</div>
+        </div>
+        <div v-else class="latency-cell">
           <div v-if="l.first_byte_ms > 0">首字 {{ fmtDur(l.first_byte_ms) }}</div>
           <div>耗时 {{ fmtDur(l.latency_ms) }}</div>
           <div v-if="tokSpeed(l)">速度 {{ tokSpeed(l) }}</div>
@@ -75,7 +82,7 @@
     :page-size="logs.size"
     show-less-items
     style="margin-top: 14px; text-align: right"
-    @change="loadLogs"
+    @change="onPageChange"
   />
 
   <LogDetailModal ref="detailModal" />
@@ -83,11 +90,16 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { guard, store } from '../store'
-import { cacheRate, fmtDur, fmtPromptLine, fmtTime, tokSpeed } from '../utils'
+import {
+  cacheRate, fmtDur, fmtElapsed, fmtPromptLine, fmtTime,
+  statusLabel, statusTagColor, tokSpeed,
+} from '../utils'
 import LogDetailModal from '../components/LogDetailModal.vue'
+
+const refreshInterval = 3000
 
 const columns = [
   { title: '时间', key: 'created_at', width: 170 },
@@ -105,10 +117,19 @@ const columns = [
 const logs = reactive({ data: [], total: 0, page: 1, size: 20 })
 const logFilter = reactive({ model: '', status: '', agent: '', token_id: '', channel_id: '', start_time: null, end_time: null })
 const logsLoading = ref(false)
+const autoRefresh = ref(true)
+const now = ref(Date.now())
 const detailModal = ref(null)
 
-async function loadLogs() {
-  logsLoading.value = true
+let pollTimer = null
+let clockTimer = null
+let inFlight = false
+
+// silent 刷新不置 loading，避免轮询时整表闪烁；inFlight 防止请求叠加
+async function loadLogs({ silent = false } = {}) {
+  if (inFlight) return
+  inFlight = true
+  if (!silent) logsLoading.value = true
   try {
     await guard(async () => {
       const q = new URLSearchParams({ page: logs.page, size: logs.size })
@@ -124,7 +145,8 @@ async function loadLogs() {
       logs.total = v.total
     })
   } finally {
-    logsLoading.value = false
+    inFlight = false
+    if (!silent) logsLoading.value = false
   }
 }
 
@@ -133,7 +155,44 @@ function searchLogs() {
   loadLogs()
 }
 
-onMounted(loadLogs)
+function onPageChange() {
+  loadLogs()
+}
+
+function onAutoRefreshChange() {
+  if (autoRefresh.value && logs.page === 1) loadLogs({ silent: true })
+}
+
+function onVisibilityChange() {
+  if (document.hidden) return
+  now.value = Date.now()
+  if (autoRefresh.value && logs.page === 1) loadLogs({ silent: true })
+}
+
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(() => {
+    if (!autoRefresh.value || document.hidden || logs.page !== 1) return
+    loadLogs({ silent: true })
+  }, refreshInterval)
+  // processing 行没有 latency_ms，靠本地时钟推进「已运行」
+  clockTimer = setInterval(() => { now.value = Date.now() }, 1000)
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
+}
+
+onMounted(() => {
+  loadLogs()
+  startPolling()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+onUnmounted(() => {
+  stopPolling()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
 </script>
 
 <style scoped>

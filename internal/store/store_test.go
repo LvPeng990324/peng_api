@@ -825,3 +825,132 @@ func TestMappingParameterOverrides(t *testing.T) {
 		t.Errorf("overrides should be cleared: %+v", got.ParameterOverrides)
 	}
 }
+
+// ---- processing 日志：请求进入即写一行，结束时原地回填 ----
+
+func TestUpdateLogBackfillsProcessingRow(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	started := time.Now().UTC().Add(-3 * time.Second).Truncate(time.Second)
+	e := LogEntry{
+		RequestID: "req-live", Attempt: 1, TokenName: "tester", Agent: "cline",
+		ModelRequested: "m1", ModelCanonical: "m1", ModelActual: "m1-free",
+		ChannelName: "c1", Status: LogStatusProcessing,
+		RequestBody: `{"model":"m1"}`, CreatedAt: started,
+	}
+	id, err := s.InsertLog(ctx, e)
+	if err != nil {
+		t.Fatalf("InsertLog: %v", err)
+	}
+
+	// 尝试结束后回填终态：可变列全部更新，请求侧字段与 created_at 不动。
+	code, prompt, completion, hit := 200, 7, 3, 2
+	e.ID = id
+	e.Status = LogStatusSuccess
+	e.HTTPStatus, e.PromptTokens = &code, &prompt
+	e.CompletionTokens, e.PromptCacheHitTokens = &completion, &hit
+	e.ResponseBody = `{"choices":[]}`
+	e.LatencyMS, e.FirstByteMS = 1234, 88
+	if err := s.UpdateLog(ctx, e); err != nil {
+		t.Fatalf("UpdateLog: %v", err)
+	}
+
+	got, err := s.GetLog(ctx, id)
+	if err != nil || got == nil {
+		t.Fatalf("GetLog: %v %+v", err, got)
+	}
+	if got.Status != LogStatusSuccess || got.HTTPStatus == nil || *got.HTTPStatus != 200 {
+		t.Errorf("status/http_status not backfilled: %+v", got)
+	}
+	if got.ResponseBody != `{"choices":[]}` || got.Error != "" {
+		t.Errorf("response body/error not backfilled: %+v", got)
+	}
+	if got.PromptTokens == nil || *got.PromptTokens != 7 ||
+		got.CompletionTokens == nil || *got.CompletionTokens != 3 ||
+		got.PromptCacheHitTokens == nil || *got.PromptCacheHitTokens != 2 {
+		t.Errorf("tokens not backfilled: %+v", got)
+	}
+	if got.LatencyMS != 1234 || got.FirstByteMS != 88 {
+		t.Errorf("latency not backfilled: %+v", got)
+	}
+	// created_at 是请求开始时间，回填不得改写
+	if got.CreatedAt.Unix() != started.Unix() {
+		t.Errorf("created_at must stay at request start: %v want %v", got.CreatedAt, started)
+	}
+	if got.RequestID != "req-live" || got.ModelActual != "m1-free" || got.RequestBody != `{"model":"m1"}` {
+		t.Errorf("request-side fields must be immutable: %+v", got)
+	}
+	_, total, _ := s.ListLogs(ctx, LogFilter{Page: 1, Size: 10})
+	if total != 1 {
+		t.Errorf("update must not add a row: total=%d", total)
+	}
+}
+
+func TestUpdateLogNotFound(t *testing.T) {
+	s := openTest(t)
+	err := s.UpdateLog(context.Background(), LogEntry{ID: 999, Status: LogStatusSuccess})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("want ErrNotFound, got %v", err)
+	}
+}
+
+func TestMarkInterruptedOnlyStaleProcessing(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	old := now.Add(-time.Hour)
+	base := LogEntry{Attempt: 1, ModelRequested: "m1", RequestBody: "{}"}
+	cases := []struct {
+		name   string
+		status string
+		at     time.Time
+		error  string
+	}{
+		{"stale-processing", LogStatusProcessing, old, ""},
+		{"fresh-processing", LogStatusProcessing, now, ""},
+		{"finished-success", LogStatusSuccess, old, ""},
+		{"finished-failed", LogStatusFailed, old, "upstream 500"},
+	}
+	ids := make([]int64, len(cases))
+	for i, c := range cases {
+		e := base
+		e.RequestID = "req-" + c.name
+		e.Status, e.CreatedAt, e.Error = c.status, c.at, c.error
+		id, err := s.InsertLog(ctx, e)
+		if err != nil {
+			t.Fatalf("InsertLog %s: %v", c.name, err)
+		}
+		ids[i] = id
+	}
+
+	n, err := s.MarkInterrupted(ctx, now.Add(-10*time.Minute), "interrupted (timeout)")
+	if err != nil || n != 1 {
+		t.Fatalf("MarkInterrupted: n=%d err=%v", n, err)
+	}
+	assertStatus := func(i int, wantStatus, wantError string) {
+		t.Helper()
+		got, err := s.GetLog(ctx, ids[i])
+		if err != nil || got == nil {
+			t.Fatalf("GetLog %d: %v", i, err)
+		}
+		if got.Status != wantStatus || got.Error != wantError {
+			t.Errorf("row %d: status=%q error=%q, want %q/%q", i, got.Status, got.Error, wantStatus, wantError)
+		}
+	}
+	assertStatus(0, LogStatusFailed, "interrupted (timeout)")
+	assertStatus(1, LogStatusProcessing, "")
+	assertStatus(2, LogStatusSuccess, "")
+	assertStatus(3, LogStatusFailed, "upstream 500")
+
+	// 幂等：再扫一次没有新行可清
+	n, err = s.MarkInterrupted(ctx, now.Add(-10*time.Minute), "interrupted (timeout)")
+	if err != nil || n != 0 {
+		t.Errorf("second sweep: n=%d err=%v", n, err)
+	}
+	// 启动时 cutoff=now 之后，所有遗留 processing 一次性收口
+	n, err = s.MarkInterrupted(ctx, now.Add(time.Minute), "interrupted (server restarted)")
+	if err != nil || n != 1 {
+		t.Errorf("startup sweep: n=%d err=%v", n, err)
+	}
+	assertStatus(1, LogStatusFailed, "interrupted (server restarted)")
+}

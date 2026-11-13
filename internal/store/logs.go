@@ -50,6 +50,14 @@ const (
 	maxLogPerPage     = 200
 )
 
+// 日志状态：一次尝试从 processing 起，收口到 success / failed。
+// interrupted 不是独立状态，统一记为 failed + error 说明原因。
+const (
+	LogStatusProcessing = "processing"
+	LogStatusSuccess    = "success"
+	LogStatusFailed     = "failed"
+)
+
 func visibleLogColumns(withBody bool) []string {
 	cols := make([]string, 0, len(logColumns))
 	for _, c := range logColumns {
@@ -92,6 +100,42 @@ func (s *Store) InsertLog(ctx context.Context, e LogEntry) (int64, error) {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// UpdateLog 回填一次尝试的终态，只更新响应侧列：
+// 请求侧字段与 created_at（请求开始时间）在 INSERT 时已确定，不得改写。
+func (s *Store) UpdateLog(ctx context.Context, e LogEntry) error {
+	q := `UPDATE request_logs SET status=?, http_status=?, error=?, response_body=?,
+		prompt_tokens=?, completion_tokens=?, prompt_cache_hit_tokens=?,
+		latency_ms=?, first_byte_ms=? WHERE id=?`
+	res, err := s.db.ExecContext(ctx, q,
+		e.Status, e.HTTPStatus, e.Error, e.ResponseBody,
+		e.PromptTokens, e.CompletionTokens, e.PromptCacheHitTokens,
+		e.LatencyMS, e.FirstByteMS, e.ID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// MarkInterrupted 把中断的 processing 行收口为 failed。
+// cutoff=当前时间即清理上次进程遗留的全部 processing（启动时调用）；
+// cutoff=now-staleAfter 只清理超时行（运行中周期调用）。
+func (s *Store) MarkInterrupted(ctx context.Context, cutoff time.Time, reason string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE request_logs SET status=?, error=? WHERE status=? AND created_at < ?`,
+		LogStatusFailed, reason, LogStatusProcessing, cutoff.UTC())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 type LogFilter struct {

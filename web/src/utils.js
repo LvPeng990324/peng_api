@@ -89,3 +89,28 @@ export function fmtTokens(l) {
   if (l.prompt_cache_hit_tokens) s += `(${l.prompt_cache_hit_tokens})`
   return s + '+' + l.completion_tokens
 }
+
+// ---- 日志状态与进行中计时：列表与详情共用 ----
+
+export function statusLabel(s) {
+  return s === 'processing' ? '处理中' : s
+}
+
+export function statusTagColor(s) {
+  if (s === 'success') return 'success'
+  if (s === 'processing') return 'processing'
+  return 'error'
+}
+
+export function statusTextColor(s) {
+  if (s === 'success') return '#52c41a'
+  if (s === 'processing') return '#1677ff'
+  return '#f87171'
+}
+
+// processing 行没有 latency_ms，用请求开始时间在前端本地计时
+export function fmtElapsed(createdAt, now = Date.now()) {
+  const t = new Date(createdAt).getTime()
+  if (!Number.isFinite(t)) return '-'
+  return fmtDur(Math.max(0, now - t))
+}
