@@ -119,7 +119,7 @@ const columns = [
 ]
 
 const logs = reactive({ data: [], total: 0, page: 1, size: 20 })
-const logFilter = reactive({ model: '', status: '', agent: '', token_id: '', channel_id: '', start_time: null, end_time: null })
+const logFilter = reactive({ model: '', status: null, agent: '', token_id: null, channel_id: null, start_time: null, end_time: null })
 const logsLoading = ref(false)
 const autoRefresh = ref(true)
 const now = ref(Date.now())
