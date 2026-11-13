@@ -2,109 +2,114 @@ package admin
 
 import (
 	"net/http"
-	"strconv"
 
+	"pengapi/internal/httpx"
 	"pengapi/internal/store"
-
-	"github.com/go-chi/chi/v5"
 )
 
-type tokenRow struct {
+// tokenView 是 Token 在管理端唯一的响应形状：列表用 maskedTokenView 打码，
+// 创建与详情用 fullTokenView 返回完整值。DB 实体不再直接序列化。
+type tokenView struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
-	Token     string `json:"token"` // 列表中打码
+	Token     string `json:"token"`
 	Enabled   bool   `json:"enabled"`
 	CreatedAt string `json:"created_at"`
 }
 
-func maskToken(t store.Token) tokenRow {
+func newTokenView(t store.Token, token string) tokenView {
+	return tokenView{
+		ID: t.ID, Name: t.Name, Token: token, Enabled: t.Enabled,
+		CreatedAt: t.CreatedAt.Format("2006-01-02 15:04:05"),
+	}
+}
+
+func maskedTokenView(t store.Token) tokenView {
 	masked := t.Token
 	if len(masked) > 7 {
 		masked = "sk-****" + masked[len(masked)-4:]
 	}
-	return tokenRow{ID: t.ID, Name: t.Name, Token: masked, Enabled: t.Enabled,
-		CreatedAt: t.CreatedAt.Format("2006-01-02 15:04:05")}
+	return newTokenView(t, masked)
 }
 
-func (h *Handler) listTokens(w http.ResponseWriter, r *http.Request) {
+func fullTokenView(t store.Token) tokenView { return newTokenView(t, t.Token) }
+
+func (h dataAPI) listTokens(w http.ResponseWriter, r *http.Request) {
 	tokens, err := h.store.ListTokens(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	rows := make([]tokenRow, 0, len(tokens))
+	rows := make([]tokenView, 0, len(tokens))
 	for _, t := range tokens {
-		rows = append(rows, maskToken(t))
+		rows = append(rows, maskedTokenView(t))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": rows})
+	httpx.JSON(w, http.StatusOK, map[string]any{"data": rows})
 }
 
-func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
+func (h dataAPI) createToken(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Name string `json:"name"`
 	}
-	if !decodeJSON(w, r, &in) {
+	if !httpx.DecodeAdminJSON(w, r, &in) {
 		return
 	}
 	if in.Name == "" {
-		writeErr(w, http.StatusBadRequest, "name is required")
+		httpx.Error(w, http.StatusBadRequest, "name is required")
 		return
 	}
 	t, err := h.store.CreateToken(r.Context(), in.Name)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, t) // 完整 token 仅此一次返回
+	httpx.JSON(w, http.StatusCreated, fullTokenView(*t)) // 完整 token 仅此一次返回
 }
 
-func (h *Handler) getToken(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
+func (h dataAPI) getToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
 		return
 	}
 	t, err := h.store.GetToken(r.Context(), id)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
 	if t == nil {
-		writeErr(w, http.StatusNotFound, "token not found")
+		httpx.Error(w, http.StatusNotFound, "token not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": t.ID, "name": t.Name, "token": t.Token})
+	httpx.JSON(w, http.StatusOK, fullTokenView(*t))
 }
 
-func (h *Handler) updateToken(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
+func (h dataAPI) updateToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
 		return
 	}
 	var in struct {
 		Name    string `json:"name"`
 		Enabled bool   `json:"enabled"`
 	}
-	if !decodeJSON(w, r, &in) {
+	if !httpx.DecodeAdminJSON(w, r, &in) {
 		return
 	}
 	if err := h.store.UpdateToken(r.Context(), id, in.Name, in.Enabled); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *Handler) deleteToken(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
+func (h dataAPI) deleteToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
 		return
 	}
 	if err := h.store.DeleteToken(r.Context(), id); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

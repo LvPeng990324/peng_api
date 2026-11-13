@@ -2,20 +2,22 @@ package relay
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"pengapi/internal/httpx"
 	"pengapi/internal/relay/provider"
 	"pengapi/internal/store"
 )
 
+const logWriteTimeout = 5 * time.Second
+
 // 客户端断开后日志仍要落盘，故 DB 操作用脱离请求生命周期的 ctx
 func detachedCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 5*time.Second)
+	return context.WithTimeout(context.Background(), logWriteTimeout)
 }
 
 func (e *Engine) insertLog(entry *store.LogEntry) {
@@ -26,122 +28,121 @@ func (e *Engine) insertLog(entry *store.LogEntry) {
 	}
 }
 
-func (e *Engine) run(w http.ResponseWriter, r *http.Request, tok *store.Token,
-	mapping *store.Mapping, candidates []store.Candidate, body []byte, stream bool) {
-
-	requestID := newUUID()
-	agent := clientAgent(r)
-	var failures []string
-
-	// 映射侧强制参数覆盖（如 temperature 固定值），先于 model 替换，对所有候选生效
-	overridden, err := applyOverrides(body, mapping.ParameterOverrides)
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	body = overridden
-
-	for i, cand := range candidates {
-		p, ok := e.providers.For(cand.Channel.Type)
-		if !ok {
-			failures = append(failures, fmt.Sprintf("%s: unknown channel type %q", cand.Channel.Name, cand.Channel.Type))
-			continue
-		}
-
-		// model 字段总是替换为模型实体名（客户端传的只是标准名）
-		reqBody, err := replaceModel(body, cand.ModelName)
-		if err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid request body")
-			return
-		}
-
-		entry := store.LogEntry{
-			RequestID: requestID, Attempt: i + 1,
-			TokenID: &tok.ID, TokenName: tok.Name, Agent: agent,
-			ModelRequested: mapping.Name, ModelCanonical: mapping.Name, ModelActual: cand.ModelName,
-			ChannelID: &cand.Channel.ID, ChannelName: cand.Channel.Name,
-			Stream: stream, RequestBody: string(reqBody),
-		}
-		// 客户端原始模型名单独保留（ModelRequested 语义）
-		if orig := originalModelName(body); orig != "" {
-			entry.ModelRequested = orig
-		}
-
-		start := time.Now()
-		res := p.Chat(r.Context(), cand.Channel, provider.ChatRequest{
-			Model: cand.ModelName, Body: reqBody, Stream: stream,
-		})
-		entry.LatencyMS = time.Since(start).Milliseconds()
-
-		// 传输层失败
-		if res.Err != nil {
-			entry.Status = "failed"
-			entry.Error = res.Err.Error()
-			if r.Context().Err() != nil {
-				entry.Error = "client aborted: " + res.Err.Error()
-				e.insertLog(&entry)
-				return // 客户端已走，只记日志，不再降级
-			}
-			e.insertLog(&entry)
-			failures = append(failures, cand.Channel.Name+": "+res.Err.Error())
-			continue
-		}
-
-		entry.HTTPStatus = &res.HTTPStatus
-
-		// 成功
-		if res.HTTPStatus >= 200 && res.HTTPStatus < 300 {
-			if stream {
-				// p.Chat 返回即收到上游响应头，此刻的耗时即首字耗时；
-				// 总耗时由 finishStream 在流结束后回填到 LatencyMS
-				entry.FirstByteMS = entry.LatencyMS
-				e.finishStream(w, res.Stream, &entry, start)
-				return
-			}
-			ct := res.Header.Get("Content-Type")
-			if ct == "" {
-				ct = "application/json"
-			}
-			w.Header().Set("Content-Type", ct)
-			w.WriteHeader(res.HTTPStatus)
-			w.Write(res.Body)
-			entry.Status = "success"
-			entry.ResponseBody = string(res.Body)
-			entry.PromptTokens, entry.CompletionTokens, entry.PromptCacheHitTokens = parseUsage(res.Body)
-			e.insertLog(&entry)
-			return
-		}
-
-		entry.ResponseBody = string(res.Body)
-
-		// 可降级的 HTTP 失败：429/5xx 试下一个模型
-		if res.HTTPStatus == 429 || res.HTTPStatus >= 500 {
-			entry.Status = "failed"
-			entry.Error = fmt.Sprintf("upstream %d", res.HTTPStatus)
-			e.insertLog(&entry)
-			failures = append(failures, fmt.Sprintf("%s: upstream %d", cand.Channel.Name, res.HTTPStatus))
-			continue
-		}
-
-		// 其余 4xx：透传，不降级
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(res.HTTPStatus)
-		w.Write(res.Body)
-		entry.Status = "failed"
-		entry.Error = fmt.Sprintf("upstream %d (not retryable)", res.HTTPStatus)
-		e.insertLog(&entry)
-		return
-	}
-
-	writeOpenAIError(w, http.StatusServiceUnavailable, "all models failed: "+strings.Join(failures, "; "))
+// dispatch 收集一次客户端请求在整轮重试里不变的信息。
+// 只有 run / tryCandidate 能看到它，辅助函数通过 attemptResult 返回结论。
+type dispatch struct {
+	w          http.ResponseWriter
+	r          *http.Request
+	tok        *store.Token
+	mapping    *store.Mapping
+	candidates []store.Candidate
+	req        *requestBody
+	requestID  string
+	agent      string
+	failures   []string
 }
 
-func originalModelName(body []byte) string {
-	var m struct {
-		Model string `json:"model"`
+// attemptResult 是一次上游尝试对重试循环的输出，不携带写响应或改状态的能力。
+type attemptResult struct {
+	done    bool
+	failure string
+}
+
+func (e *Engine) run(d *dispatch) {
+	d.req.applyOverrides(d.mapping.ParameterOverrides)
+	for i, cand := range d.candidates {
+		result := e.tryCandidate(d, i, cand)
+		if result.failure != "" {
+			d.failures = append(d.failures, result.failure)
+		}
+		if result.done {
+			return
+		}
 	}
-	if json.Unmarshal(body, &m) != nil {
-		return ""
+	httpx.OpenAIError(d.w, http.StatusServiceUnavailable,
+		"all models failed: "+strings.Join(d.failures, "; "))
+}
+
+// tryCandidate 处理一次上游尝试。日志统一由 defer 落盘：
+// finishStream 是同步的，返回时 entry 已填完整，因此流式与非流式走同一条落盘路径。
+func (e *Engine) tryCandidate(d *dispatch, attempt int, cand store.Candidate) attemptResult {
+	p, ok := e.providers.For(cand.Channel.Type)
+	if !ok {
+		return attemptResult{failure: fmt.Sprintf("%s: unknown channel type %q", cand.Channel.Name, cand.Channel.Type)}
 	}
-	return m.Model
+	reqBody, err := d.req.bytesFor(cand.ModelName)
+	if err != nil {
+		httpx.OpenAIError(d.w, http.StatusBadRequest, "invalid request body")
+		return attemptResult{done: true}
+	}
+	entry := store.LogEntry{
+		RequestID: d.requestID, Attempt: attempt + 1,
+		TokenID: &d.tok.ID, TokenName: d.tok.Name, Agent: d.agent,
+		ModelRequested: d.req.model, ModelCanonical: d.mapping.Name, ModelActual: cand.ModelName,
+		ChannelID: &cand.Channel.ID, ChannelName: cand.Channel.Name,
+		Stream: d.req.isStream(), RequestBody: string(reqBody),
+	}
+	defer e.insertLog(&entry)
+
+	start := time.Now()
+	ep := provider.Endpoint{BaseURL: cand.Channel.BaseURL, APIKey: cand.Channel.APIKey}
+	res, err := p.Chat(d.r.Context(), ep, provider.ChatRequest{
+		Model: cand.ModelName, Body: reqBody, Stream: d.req.isStream(),
+	})
+	entry.LatencyMS = time.Since(start).Milliseconds()
+
+	if err != nil {
+		return transportFailure(d.r.Context(), &entry, cand, err)
+	}
+	entry.HTTPStatus = &res.HTTPStatus
+	if res.OK() {
+		if d.req.isStream() {
+			// p.Chat 返回即收到上游响应头，此刻耗时即首字耗时。
+			entry.FirstByteMS = entry.LatencyMS
+			finishStream(d.w, res.Stream, &entry, start)
+			return attemptResult{done: true}
+		}
+		writeSuccess(d.w, &entry, res)
+		return attemptResult{done: true}
+	}
+	return httpFailure(d.w, &entry, cand, res)
+}
+
+func transportFailure(ctx context.Context, entry *store.LogEntry, cand store.Candidate, err error) attemptResult {
+	entry.Status = "failed"
+	entry.Error = err.Error()
+	if ctx.Err() != nil {
+		entry.Error = "client aborted: " + err.Error()
+		return attemptResult{done: true} // 客户端已走，只记日志，不再降级
+	}
+	return attemptResult{failure: cand.Channel.Name + ": " + err.Error()}
+}
+
+func writeSuccess(w http.ResponseWriter, entry *store.LogEntry, res provider.Result) {
+	ct := res.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "application/json"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.WriteHeader(res.HTTPStatus)
+	w.Write(res.Body)
+	entry.Status = "success"
+	entry.ResponseBody = string(res.Body)
+	entry.PromptTokens, entry.CompletionTokens, entry.PromptCacheHitTokens = parseUsage(res.Body)
+}
+
+func httpFailure(w http.ResponseWriter, entry *store.LogEntry, cand store.Candidate, res provider.Result) attemptResult {
+	entry.ResponseBody = string(res.Body)
+	if res.HTTPStatus == 429 || res.HTTPStatus >= 500 {
+		entry.Status = "failed"
+		entry.Error = fmt.Sprintf("upstream %d", res.HTTPStatus)
+		return attemptResult{failure: fmt.Sprintf("%s: upstream %d", cand.Channel.Name, res.HTTPStatus)}
+	}
+	// 其余 4xx：原样透传，不降级
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(res.HTTPStatus)
+	w.Write(res.Body)
+	entry.Status = "failed"
+	entry.Error = fmt.Sprintf("upstream %d (not retryable)", res.HTTPStatus)
+	return attemptResult{done: true}
 }

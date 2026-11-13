@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Channel 上游渠道：只提供连接信息与优先级，是模型实体的容器
+// Channel 上游渠道：只提供连接信息与优先级，是模型实体的容器。
 type Channel struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
@@ -19,6 +19,22 @@ type Channel struct {
 	TestModel string    `json:"test_model"`
 	Remark    string    `json:"remark"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// ChannelRef 是转发路径需要的渠道视图：只带调用上游必需的字段，
+// 避免把完整 DB 实体（备注、额度类型、时间戳等）带进请求热路径。
+type ChannelRef struct {
+	ID      int64
+	Name    string
+	Type    string
+	BaseURL string
+	APIKey  string
+}
+
+// Candidate 一次上游尝试：渠道 + 该渠道下命中的模型实体名
+type Candidate struct {
+	Channel   ChannelRef
+	ModelName string
 }
 
 func (s *Store) CreateChannel(ctx context.Context, ch Channel) (*Channel, error) {
@@ -94,17 +110,10 @@ func (s *Store) SetChannelEnabled(ctx context.Context, id int64, enabled bool) e
 	return err
 }
 
-// Candidate 一次上游尝试：渠道 + 该渠道下命中的模型实体名
-type Candidate struct {
-	Channel   Channel
-	ModelName string
-}
-
 // SelectModels 展开映射绑定的模型实体：仅启用渠道，按渠道优先级 DESC、模型 id ASC 排序
 func (s *Store) SelectModels(ctx context.Context, mappingID int64) ([]Candidate, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT c.id, c.name, c.type, c.quota_type, c.base_url, c.api_key, c.priority, c.enabled, c.test_model, c.remark, c.created_at,
-		       m.name
+		SELECT c.id, c.name, c.type, c.base_url, c.api_key, m.name
 		FROM model_mapping_models mm
 		JOIN models m ON m.id = mm.model_id
 		JOIN channels c ON c.id = m.channel_id
@@ -117,9 +126,8 @@ func (s *Store) SelectModels(ctx context.Context, mappingID int64) ([]Candidate,
 	out := []Candidate{}
 	for rows.Next() {
 		var c Candidate
-		if err := rows.Scan(&c.Channel.ID, &c.Channel.Name, &c.Channel.Type, &c.Channel.QuotaType, &c.Channel.BaseURL,
-			&c.Channel.APIKey, &c.Channel.Priority, &c.Channel.Enabled, &c.Channel.TestModel,
-			&c.Channel.Remark, &c.Channel.CreatedAt, &c.ModelName); err != nil {
+		if err := rows.Scan(&c.Channel.ID, &c.Channel.Name, &c.Channel.Type, &c.Channel.BaseURL,
+			&c.Channel.APIKey, &c.ModelName); err != nil {
 			return nil, err
 		}
 		out = append(out, c)

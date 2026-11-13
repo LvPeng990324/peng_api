@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"pengapi/internal/store"
 )
 
 func TestQuotaServiceOpenRouter(t *testing.T) {
@@ -25,8 +23,8 @@ func TestQuotaServiceOpenRouter(t *testing.T) {
 
 	svc := newQuotaService()
 	svc.client = upstream.Client()
-	svc.openRouterURL = upstream.URL + "/api/v1/auth/key"
-	quota, err := svc.fetch(context.Background(), store.Channel{QuotaType: "openrouter", APIKey: "openrouter-key"})
+	svc.setURL("openrouter", upstream.URL+"/api/v1/auth/key")
+	quota, err := svc.fetch(context.Background(), "openrouter", "openrouter-key")
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -50,8 +48,8 @@ func TestQuotaServiceDeepSeek(t *testing.T) {
 
 	svc := newQuotaService()
 	svc.client = upstream.Client()
-	svc.deepSeekURL = upstream.URL + "/user/balance"
-	quota, err := svc.fetch(context.Background(), store.Channel{QuotaType: "deepseek", APIKey: "deepseek-key"})
+	svc.setURL("deepseek", upstream.URL+"/user/balance")
+	quota, err := svc.fetch(context.Background(), "deepseek", "deepseek-key")
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -79,8 +77,8 @@ func TestQuotaServiceKimiRatios(t *testing.T) {
 
 	svc := newQuotaService()
 	svc.client = upstream.Client()
-	svc.kimiURL = upstream.URL + "/coding/v1/usages"
-	quota, err := svc.fetch(context.Background(), store.Channel{QuotaType: "kimi", APIKey: "kimi-key"})
+	svc.setURL("kimi", upstream.URL+"/coding/v1/usages")
+	quota, err := svc.fetch(context.Background(), "kimi", "kimi-key")
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -101,8 +99,8 @@ func TestQuotaServiceKimiLegacyAndMissingWindows(t *testing.T) {
 
 	svc := newQuotaService()
 	svc.client = upstream.Client()
-	svc.kimiURL = upstream.URL
-	quota, err := svc.fetch(context.Background(), store.Channel{QuotaType: "kimi", APIKey: "kimi-key"})
+	svc.setURL("kimi", upstream.URL)
+	quota, err := svc.fetch(context.Background(), "kimi", "kimi-key")
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -130,11 +128,27 @@ func TestQuotaServiceErrors(t *testing.T) {
 			defer upstream.Close()
 			svc := newQuotaService()
 			svc.client = upstream.Client()
-			svc.openRouterURL = upstream.URL
-			if _, err := svc.fetch(context.Background(), store.Channel{QuotaType: "openrouter", APIKey: "bad"}); err == nil {
+			svc.setURL("openrouter", upstream.URL)
+			if _, err := svc.fetch(context.Background(), "openrouter", "bad"); err == nil {
 				t.Fatal("expected error")
 			}
 		})
+	}
+}
+
+func TestQuotaTypesDerivedFromRegistry(t *testing.T) {
+	svc := newQuotaService()
+	types := svc.types()
+	if len(types) != len(quotaSources) {
+		t.Fatalf("types = %+v", types)
+	}
+	for _, opt := range types {
+		if !validQuotaType(opt.Value) || opt.Label == "" {
+			t.Errorf("inconsistent registry entry: %+v", opt)
+		}
+	}
+	if validQuotaType("none") {
+		t.Error("unknown quota type must be rejected")
 	}
 }
 
@@ -146,7 +160,7 @@ func TestChannelQuotaAPI(t *testing.T) {
 	defer upstream.Close()
 
 	env := newAdminEnv(t)
-	env.h.quotas.openRouterURL = upstream.URL
+	env.h.quotas.svc.setURL("openrouter", upstream.URL)
 	resp := env.call(t, http.MethodPost, "/api/channels", `{"name":"or","base_url":"http://upstream","api_key":"k","quota_type":"openrouter"}`)
 	created := readJSON(t, resp)
 	if resp.StatusCode != http.StatusCreated || created["quota_type"] != "openrouter" {
@@ -162,6 +176,12 @@ func TestChannelQuotaAPI(t *testing.T) {
 	data := got["data"].(map[string]any)
 	if data["used"].(float64) != 58 || data["limit"].(float64) != 100 || data["remaining"].(float64) != 42 {
 		t.Errorf("quota data: %v", data)
+	}
+
+	resp = env.call(t, http.MethodGet, "/api/quota-types", "")
+	typesResp := readJSON(t, resp)
+	if resp.StatusCode != http.StatusOK || len(typesResp["data"].([]any)) == 0 {
+		t.Errorf("quota types: %d %v", resp.StatusCode, typesResp)
 	}
 
 	resp = env.call(t, http.MethodPut, "/api/channels/"+itoa(id), `{"name":"or","base_url":"http://upstream","api_key":"k","quota_type":"none"}`)

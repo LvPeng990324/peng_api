@@ -48,6 +48,42 @@ export function pretty(s) {
   try { return JSON.stringify(JSON.parse(s), null, 2) } catch (e) { return s }
 }
 
+// ---- 日志展示格式化：列表与详情共用同一套实现 ----
+
+export function fmtDur(ms) {
+  if (ms == null) return '-'
+  if (ms >= 1000) {
+    const s = ms / 1000
+    const r = s >= 100 ? Math.round(s) : Math.round(s * 10) / 10
+    return r + 's'
+  }
+  return ms + 'ms'
+}
+
+// 速度 = 输出 tokens / 总耗时(s)
+export function tokSpeed(l) {
+  if (l.completion_tokens == null || !l.latency_ms) return ''
+  const tps = Math.round(l.completion_tokens / (l.latency_ms / 1000))
+  return tps > 0 ? tps + 't/s' : ''
+}
+
+// 输入行：命中缓存+未命中=总输入；无缓存数据时只显示总输入
+export function fmtPromptLine(l) {
+  const p = l.prompt_tokens
+  const hit = l.prompt_cache_hit_tokens
+  if (hit != null && hit > 0 && p != null) return `${hit}+${p - hit}=${p}`
+  return String(p ?? '-')
+}
+
+// 缓存命中率 = 命中缓存 token / 输入总 token * 100%
+export function cacheRate(l) {
+  const p = l.prompt_tokens
+  const hit = l.prompt_cache_hit_tokens
+  if (hit == null || hit <= 0 || !p) return ''
+  return ((hit / p) * 100).toFixed(2)
+}
+
+// 详情元信息里的一行式 token 摘要
 export function fmtTokens(l) {
   let s = String(l.prompt_tokens)
   if (l.prompt_cache_hit_tokens) s += `(${l.prompt_cache_hit_tokens})`

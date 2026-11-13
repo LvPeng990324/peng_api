@@ -1,11 +1,11 @@
 package relay
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 
 	"pengapi/internal/auth"
+	"pengapi/internal/httpx"
 	"pengapi/internal/relay/provider"
 	"pengapi/internal/store"
 )
@@ -21,49 +21,58 @@ func NewEngine(st *store.Store, reg *provider.Registry) *Engine {
 
 func (e *Engine) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	tok := auth.TokenFrom(r.Context())
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 10<<20))
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid request body")
+	if tok == nil {
+		httpx.OpenAIError(w, http.StatusUnauthorized, "missing bearer token")
 		return
 	}
-	var meta struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, httpx.MaxRequestBodyBytes))
+	if err != nil {
+		httpx.OpenAIError(w, http.StatusBadRequest, "invalid request body")
+		return
 	}
-	if err := json.Unmarshal(body, &meta); err != nil || meta.Model == "" {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid request: model is required")
+	req, err := parseRequestBody(raw)
+	if err != nil {
+		httpx.OpenAIError(w, http.StatusBadRequest, "invalid request: model is required")
+		return
+	}
+	requestID, err := newUUID()
+	if err != nil {
+		httpx.InternalOpenAIError(w, err)
 		return
 	}
 	// 标准名大小写敏感精确匹配
-	mapping, err := e.store.ResolveMapping(r.Context(), meta.Model)
+	mapping, err := e.store.ResolveMapping(r.Context(), req.model)
 	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalOpenAIError(w, err)
 		return
 	}
 	if mapping == nil {
-		writeOpenAIError(w, http.StatusNotFound, "model not found: "+meta.Model)
+		httpx.OpenAIError(w, http.StatusNotFound, "model not found: "+req.model)
 		return
 	}
 	candidates, err := e.store.SelectModels(r.Context(), mapping.ID)
 	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalOpenAIError(w, err)
 		return
 	}
 	if len(candidates) == 0 {
-		writeOpenAIError(w, http.StatusServiceUnavailable, "no available model: "+mapping.Name)
+		httpx.OpenAIError(w, http.StatusServiceUnavailable, "no available model: "+mapping.Name)
 		return
 	}
-	e.run(w, r, tok, mapping, candidates, body, meta.Stream)
+	e.run(&dispatch{
+		w: w, r: r, tok: tok, mapping: mapping, candidates: candidates,
+		req: req, requestID: requestID, agent: clientAgent(r),
+	})
 }
 
 func (e *Engine) Models(w http.ResponseWriter, r *http.Request) {
-	mappings, err := e.store.ListMappingsWithEnabledModels(r.Context())
+	models, err := e.store.ListMappingsWithEnabledModels(r.Context())
 	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalOpenAIError(w, err)
 		return
 	}
-	data := make([]map[string]any, 0, len(mappings))
-	for _, m := range mappings {
+	data := make([]map[string]any, 0, len(models))
+	for _, m := range models {
 		item := map[string]any{
 			"id": m.Name, "object": "model", "created": m.CreatedAt.Unix(), "owned_by": "peng-api",
 		}
@@ -75,6 +84,5 @@ func (e *Engine) Models(w http.ResponseWriter, r *http.Request) {
 		}
 		data = append(data, item)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": data})
+	httpx.JSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }

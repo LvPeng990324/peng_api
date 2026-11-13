@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
-	"strings"
+	"errors"
 	"time"
 )
 
@@ -26,10 +26,11 @@ func (s *Store) CreateModel(ctx context.Context, channelID int64, name string) (
 		`INSERT INTO models (channel_id, name, created_at) VALUES (?, ?, ?)`,
 		channelID, name, now)
 	if err != nil {
-		if isUniqueConstraintErr(err) {
+		classified := classifyConstraintErr(err)
+		if errors.Is(classified, ErrConflict) {
 			return s.modelByName(ctx, channelID, name)
 		}
-		return nil, err
+		return nil, classified
 	}
 	id, _ := res.LastInsertId()
 	return &Model{ID: id, ChannelID: channelID, Name: name, CreatedAt: now}, nil
@@ -137,7 +138,7 @@ func (s *Store) GetModel(ctx context.Context, id int64) (*Model, error) {
 
 // UpdateModel 原子更新模型名与（可选）标准名绑定。
 // mappingIDs == nil 表示不动绑定（兼容只改名的调用）；非 nil（含空切片）表示全量替换该模型与标准名的绑定。
-// 模型不存在返回 ErrNotFound；mapping_id 不存在时由外键报错，整个事务回滚，不留半成品。
+// 模型不存在返回 ErrNotFound；无效的 mapping_id 返回 ErrInvalidReference，整个事务回滚。
 func (s *Store) UpdateModel(ctx context.Context, id int64, name string, mappingIDs *[]int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -146,25 +147,14 @@ func (s *Store) UpdateModel(ctx context.Context, id int64, name string, mappingI
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `UPDATE models SET name=? WHERE id=?`, name, id)
 	if err != nil {
-		return err
+		return classifyConstraintErr(err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
 	if mappingIDs != nil {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM model_mapping_models WHERE model_id=?`, id); err != nil {
+		if err := replaceBindings(ctx, tx, "model_id", id, "mapping_id", *mappingIDs); err != nil {
 			return err
-		}
-		seen := make(map[int64]bool, len(*mappingIDs))
-		for _, mpID := range *mappingIDs {
-			if seen[mpID] {
-				continue
-			}
-			seen[mpID] = true
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO model_mapping_models (mapping_id, model_id) VALUES (?, ?)`, mpID, id); err != nil {
-				return err
-			}
 		}
 	}
 	return tx.Commit()
@@ -173,16 +163,4 @@ func (s *Store) UpdateModel(ctx context.Context, id int64, name string, mappingI
 func (s *Store) DeleteModel(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM models WHERE id=?`, id)
 	return err // 映射绑定由外键 ON DELETE CASCADE 清理
-}
-
-// isUniqueConstraintErr 只认 UNIQUE 冲突；FOREIGN KEY 等约束错误必须漏给调用方
-func isUniqueConstraintErr(err error) bool {
-	return strings.Contains(err.Error(), "UNIQUE constraint failed")
-}
-
-func nullI64(v sql.NullInt64) *int64 {
-	if !v.Valid {
-		return nil
-	}
-	return &v.Int64
 }

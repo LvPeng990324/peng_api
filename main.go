@@ -22,7 +22,15 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-func buildHandler(cfg config.Config, st *store.Store, engine *relay.Engine, adminH *admin.Handler) http.Handler {
+const (
+	logCleanupInterval = 24 * time.Hour
+	logCleanupTimeout  = 30 * time.Second
+	shutdownTimeout    = 10 * time.Second
+	readHeaderTimeout  = 30 * time.Second
+	sessionTTL         = 7 * 24 * time.Hour
+)
+
+func buildHandler(st *store.Store, engine *relay.Engine, adminH *admin.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer) // 请求路径 panic 兜底 → 500
 	r.Route("/v1", func(r chi.Router) {
@@ -33,6 +41,33 @@ func buildHandler(cfg config.Config, st *store.Store, engine *relay.Engine, admi
 	adminH.RegisterRoutes(r)
 	web.RegisterRoutes(r)
 	return r
+}
+
+// startLogCleaner 启动时清理一次，之后按周期清理，进程退出时随 ctx 停止。
+func startLogCleaner(ctx context.Context, st *store.Store, retentionDays int) {
+	clean := func() {
+		cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+		cctx, cancel := context.WithTimeout(context.Background(), logCleanupTimeout)
+		defer cancel()
+		if n, err := st.DeleteLogsBefore(cctx, cutoff); err != nil {
+			log.Printf("log cleanup: %v", err)
+		} else if n > 0 {
+			log.Printf("log cleanup: deleted %d rows", n)
+		}
+	}
+	clean()
+	go func() {
+		ticker := time.NewTicker(logCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				clean()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 func main() {
@@ -48,31 +83,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	// 日志清理：启动时一次 + 每 24h
-	cleanLogs := func() {
-		cutoff := time.Now().UTC().AddDate(0, 0, -cfg.LogRetentionDays)
-		cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if n, err := st.DeleteLogsBefore(cctx, cutoff); err != nil {
-			log.Printf("log cleanup: %v", err)
-		} else if n > 0 {
-			log.Printf("log cleanup: deleted %d rows", n)
-		}
-	}
-	cleanLogs()
-	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				cleanLogs()
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	startLogCleaner(ctx, st, cfg.LogRetentionDays)
 
 	// 上游 http.Client：连接超时走 Transport；整体/首字节超时由 provider 控制
 	// 不设 Client.Timeout（会杀死流式响应）
@@ -87,13 +98,13 @@ func main() {
 		provider.NewOpenAI(upstreamClient, cfg.RequestTimeout, cfg.StreamFirstByteTimeout),
 	)
 	engine := relay.NewEngine(st, providers)
-	sessions := auth.NewSessionStore(7 * 24 * time.Hour)
+	sessions := auth.NewSessionStore(sessionTTL)
 	adminH := admin.New(st, sessions, cfg.AdminPassword, providers)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           buildHandler(cfg, st, engine, adminH),
-		ReadHeaderTimeout: 30 * time.Second,
+		Handler:           buildHandler(st, engine, adminH),
+		ReadHeaderTimeout: readHeaderTimeout,
 	}
 	go func() {
 		log.Printf("peng_api listening on %s (db: %s)", cfg.Addr, cfg.DBPath)
@@ -103,7 +114,7 @@ func main() {
 	}()
 	<-ctx.Done()
 	log.Println("shutting down...")
-	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	srv.Shutdown(sctx)
 }

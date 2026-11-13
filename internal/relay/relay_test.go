@@ -18,22 +18,58 @@ import (
 	"pengapi/internal/store"
 )
 
-func TestReplaceModel(t *testing.T) {
-	out, err := replaceModel([]byte(`{"model":"GLM5.3","messages":[{"role":"user","content":"hi"}]}`), "glm-5.3-free")
+func TestRequestBodyReplacesModel(t *testing.T) {
+	req, err := parseRequestBody([]byte(`{"model":"GLM5.3","messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
-		t.Fatalf("replaceModel: %v", err)
+		t.Fatalf("parseRequestBody: %v", err)
+	}
+	out, err := req.bytesFor("glm-5.3-free")
+	if err != nil {
+		t.Fatalf("bytesFor: %v", err)
 	}
 	s := string(out)
 	if !strings.Contains(s, `"model":"glm-5.3-free"`) || !strings.Contains(s, `"content":"hi"`) {
 		t.Errorf("unexpected: %s", s)
 	}
-	if _, err := replaceModel([]byte(`not json`), "m"); err == nil {
+	if req.model != "GLM5.3" {
+		t.Errorf("original model lost: %q", req.model)
+	}
+	if _, err := parseRequestBody([]byte(`not json`)); err == nil {
 		t.Error("invalid json should error")
+	}
+	if _, err := parseRequestBody([]byte(`{"messages":[]}`)); !errors.Is(err, errModelRequired) {
+		t.Errorf("missing model should return errModelRequired, got %v", err)
+	}
+}
+
+// overrides 里即使出现 model，也不能污染日志用的客户端原始模型名。
+func TestRequestBodyOverridesKeepOriginalModel(t *testing.T) {
+	req, err := parseRequestBody([]byte(`{"model":"client-name","temperature":0.2}`))
+	if err != nil {
+		t.Fatalf("parseRequestBody: %v", err)
+	}
+	req.applyOverrides(map[string]any{"temperature": 1, "model": "override-name"})
+	out, err := req.bytesFor("upstream-name")
+	if err != nil {
+		t.Fatalf("bytesFor: %v", err)
+	}
+	if !strings.Contains(string(out), `"model":"upstream-name"`) || !strings.Contains(string(out), `"temperature":1`) {
+		t.Errorf("unexpected: %s", out)
+	}
+	if req.model != "client-name" {
+		t.Errorf("original model was overwritten: %q", req.model)
 	}
 }
 
 func TestNewUUIDFormat(t *testing.T) {
-	a, b := newUUID(), newUUID()
+	a, err := newUUID()
+	if err != nil {
+		t.Fatalf("newUUID: %v", err)
+	}
+	b, err := newUUID()
+	if err != nil {
+		t.Fatalf("newUUID: %v", err)
+	}
 	if a == b {
 		t.Error("uuids must differ")
 	}
@@ -188,7 +224,7 @@ func (e *testEnv) addModel(t *testing.T, channelName, baseURL string, priority i
 
 func (e *testEnv) addMapping(t *testing.T, name string, modelIDs ...int64) *store.Mapping {
 	t.Helper()
-	mp, err := e.st.CreateMapping(context.Background(), name, nil, nil, modelIDs, nil)
+	mp, err := e.st.CreateMapping(context.Background(), store.MappingInput{Name: name, ModelIDs: modelIDs})
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -564,18 +600,10 @@ func TestEngineStreamFirstByteTimeoutFailover(t *testing.T) {
 
 // finishStream 单元级：上游中途断流
 func TestFinishStreamUpstreamInterrupt(t *testing.T) {
-	st, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	reg := provider.NewRegistry()
-	e := NewEngine(st, reg)
-
 	src := io.NopCloser(&failAfterReader{data: []byte("data: partial\n\n")})
 	entry := &store.LogEntry{RequestID: "r1", Attempt: 1, Status: "success", Stream: true}
 	rec := httptest.NewRecorder()
-	e.finishStream(rec, src, entry, time.Now().Add(-50*time.Millisecond))
+	finishStream(rec, src, entry, time.Now().Add(-50*time.Millisecond))
 
 	if entry.Status != "failed" || !strings.Contains(entry.Error, "stream interrupted") {
 		t.Errorf("entry: %+v", entry)
@@ -583,16 +611,8 @@ func TestFinishStreamUpstreamInterrupt(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "partial") {
 		t.Errorf("partial content must reach client: %q", rec.Body.String())
 	}
-	logs, total, _ := st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
-	if total != 1 {
-		t.Fatalf("expected 1 log, got %d", total)
-	}
-	detail, err := st.GetLog(context.Background(), logs[0].ID)
-	if err != nil || detail == nil {
-		t.Fatalf("GetLog: %v", err)
-	}
-	if detail.ResponseBody != "data: partial\n\n" {
-		t.Errorf("partial body must be logged: %+v", detail)
+	if entry.ResponseBody != "data: partial\n\n" {
+		t.Errorf("partial body must be accumulated: %+v", entry)
 	}
 }
 
@@ -611,20 +631,15 @@ func (f *failAfterReader) Read(p []byte) (int, error) {
 
 // finishStream 单元级：客户端断开只记日志
 func TestFinishStreamClientDisconnect(t *testing.T) {
-	st, _ := store.Open(":memory:")
-	defer st.Close()
-	e := NewEngine(st, provider.NewRegistry())
-
 	src := io.NopCloser(strings.NewReader("data: a\n\ndata: b\n\n"))
 	entry := &store.LogEntry{RequestID: "r2", Attempt: 1, Stream: true}
-	e.finishStream(&brokenWriter{header: http.Header{}}, src, entry, time.Now().Add(-50*time.Millisecond))
+	finishStream(&brokenWriter{header: http.Header{}}, src, entry, time.Now().Add(-50*time.Millisecond))
 
 	if entry.Status != "failed" || !strings.Contains(entry.Error, "client disconnected") {
 		t.Errorf("entry: %+v", entry)
 	}
-	_, total, _ := st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
-	if total != 1 {
-		t.Fatalf("expected 1 log, got %d", total)
+	if entry.ResponseBody != "" {
+		t.Errorf("nothing was written, body must stay empty: %+v", entry)
 	}
 }
 
@@ -644,10 +659,10 @@ func TestModelsEndpoint(t *testing.T) {
 	env := newTestEnv(t, 5*time.Second)
 	_, m := env.addModel(t, "ch", up.url(), 1, "glm-5.3-free")
 	cl, mot := int64(131072), int64(8192)
-	if _, err := env.st.CreateMapping(context.Background(), "glm-5.3", &cl, &mot, []int64{m.ID}, nil); err != nil {
+	if _, err := env.st.CreateMapping(context.Background(), store.MappingInput{Name: "glm-5.3", ContextLength: &cl, MaxOutputTokens: &mot, ModelIDs: []int64{m.ID}}); err != nil {
 		t.Fatal(err)
 	}
-	env.st.CreateMapping(context.Background(), "hidden", nil, nil, nil, nil) // 未绑定模型
+	env.st.CreateMapping(context.Background(), store.MappingInput{Name: "hidden"}) // 未绑定模型
 
 	req, _ := http.NewRequest(http.MethodGet, env.client.URL+"/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+env.tok.Token)
@@ -668,7 +683,10 @@ func TestModelsEndpoint(t *testing.T) {
 }
 
 func TestEngineParameterOverrides(t *testing.T) {
+	// stream 只有一个真相源：覆盖成 false 后，provider 也必须走非流式路径。
+	var gotAccept atomic.Value
 	up := newFakeUpstream(func(w http.ResponseWriter, r *http.Request) {
+		gotAccept.Store(r.Header.Get("Accept"))
 		io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
 	})
 	defer up.close()
@@ -676,8 +694,8 @@ func TestEngineParameterOverrides(t *testing.T) {
 	env := newTestEnv(t, 5*time.Second)
 	_, m := env.addModel(t, "ch", up.url(), 1, "glm-5.3-free")
 	// 标准名 glm-5.3：强制 temperature=1、stream=false，客户端传什么都被覆盖
-	mp, err := env.st.CreateMapping(context.Background(), "glm-5.3", nil, nil,
-		[]int64{m.ID}, map[string]any{"temperature": float64(1), "stream": false})
+	mp, err := env.st.CreateMapping(context.Background(), store.MappingInput{Name: "glm-5.3", ModelIDs: []int64{m.ID}, ParameterOverrides: map[string]any{"temperature": float64(1), "stream": false}})
+
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -697,6 +715,9 @@ func TestEngineParameterOverrides(t *testing.T) {
 	if !strings.Contains(got, `"stream":false`) {
 		t.Errorf("stream not overridden: %s", got)
 	}
+	if accept, _ := gotAccept.Load().(string); accept != "" {
+		t.Errorf("overridden stream=false must not use SSE path, Accept=%q", accept)
+	}
 	if !strings.Contains(got, `"top_p":0.5`) {
 		t.Errorf("non-overridden param must pass through: %s", got)
 	}
@@ -705,7 +726,7 @@ func TestEngineParameterOverrides(t *testing.T) {
 	}
 
 	// 更新映射清掉覆盖后，客户端参数原样透传
-	if err := env.st.UpdateMapping(context.Background(), mp.ID, "glm-5.3", nil, nil, []int64{m.ID}, nil); err != nil {
+	if err := env.st.UpdateMapping(context.Background(), mp.ID, store.MappingInput{Name: "glm-5.3", ModelIDs: []int64{m.ID}}); err != nil {
 		t.Fatal(err)
 	}
 	resp = env.chat(t, `{"model":"glm-5.3","messages":[],"temperature":0.7}`)

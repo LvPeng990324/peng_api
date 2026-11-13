@@ -4,12 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"time"
 )
-
-// ErrNotFound 更新对象不存在（由 RowsAffected=0 判定）
-var ErrNotFound = errors.New("store: not found")
 
 // BoundModel 映射绑定的一个模型实体（附渠道名/优先级/启用状态，供管理端按真实调用顺序展示）
 type BoundModel struct {
@@ -33,7 +29,17 @@ type Mapping struct {
 	CreatedAt          time.Time      `json:"created_at"`
 }
 
-// encodeOverrides 序列化为 JSON 文本入库；空映射存 ''（扫描侧归一为 nil）
+// PublicModel 是 /v1/models 对外暴露的标准名视图，只包含该接口需要的字段。
+// 与 Mapping 分离，避免出现「同一个结构在不同查询里只填充部分字段」的隐式契约。
+type PublicModel struct {
+	ID              int64
+	Name            string
+	ContextLength   *int64
+	MaxOutputTokens *int64
+	CreatedAt       time.Time
+}
+
+// encodeOverrides 序列化为 JSON 文本入库；空映射存''（扫描侧归一为 nil）
 func encodeOverrides(overrides map[string]any) (string, error) {
 	if len(overrides) == 0 {
 		return "", nil
@@ -56,25 +62,34 @@ func decodeOverrides(text string) (map[string]any, error) {
 	return m, nil
 }
 
-func (s *Store) CreateMapping(ctx context.Context, name string, contextLength, maxOutputTokens *int64, modelIDs []int64, overrides map[string]any) (*Mapping, error) {
+// MappingInput 是创建/更新标准名映射的配置对象，避免方法参数过长。
+type MappingInput struct {
+	Name               string
+	ContextLength      *int64
+	MaxOutputTokens    *int64
+	ModelIDs           []int64
+	ParameterOverrides map[string]any
+}
+
+func (s *Store) CreateMapping(ctx context.Context, in MappingInput) (*Mapping, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
-	ovText, err := encodeOverrides(overrides)
+	ovText, err := encodeOverrides(in.ParameterOverrides)
 	if err != nil {
 		return nil, err
 	}
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO model_mappings (name, context_length, max_output_tokens, parameter_overrides, created_at) VALUES (?, ?, ?, ?, ?)`,
-		name, contextLength, maxOutputTokens, ovText, now)
+		in.Name, in.ContextLength, in.MaxOutputTokens, ovText, now)
 	if err != nil {
-		return nil, err
+		return nil, classifyConstraintErr(err)
 	}
 	id, _ := res.LastInsertId()
-	if err := replaceMappingBindings(ctx, tx, id, modelIDs); err != nil {
+	if err := replaceBindings(ctx, tx, "mapping_id", id, "model_id", in.ModelIDs); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -84,53 +99,34 @@ func (s *Store) CreateMapping(ctx context.Context, name string, contextLength, m
 	if err != nil {
 		return nil, err
 	}
-	return &Mapping{ID: id, Name: name, ContextLength: contextLength, MaxOutputTokens: maxOutputTokens,
-		ParameterOverrides: overrides, BoundModels: bound, CreatedAt: now}, nil
+	return &Mapping{ID: id, Name: in.Name, ContextLength: in.ContextLength, MaxOutputTokens: in.MaxOutputTokens,
+		ParameterOverrides: in.ParameterOverrides, BoundModels: bound, CreatedAt: now}, nil
 }
 
 // UpdateMapping 全量更新字段与绑定（model_ids 整体替换）；映射不存在返回 ErrNotFound
-func (s *Store) UpdateMapping(ctx context.Context, id int64, name string, contextLength, maxOutputTokens *int64, modelIDs []int64, overrides map[string]any) error {
+func (s *Store) UpdateMapping(ctx context.Context, id int64, in MappingInput) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	ovText, err := encodeOverrides(overrides)
+	ovText, err := encodeOverrides(in.ParameterOverrides)
 	if err != nil {
 		return err
 	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE model_mappings SET name=?, context_length=?, max_output_tokens=?, parameter_overrides=? WHERE id=?`,
-		name, contextLength, maxOutputTokens, ovText, id)
+		in.Name, in.ContextLength, in.MaxOutputTokens, ovText, id)
 	if err != nil {
-		return err
+		return classifyConstraintErr(err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	if err := replaceMappingBindings(ctx, tx, id, modelIDs); err != nil {
+	if err := replaceBindings(ctx, tx, "mapping_id", id, "model_id", in.ModelIDs); err != nil {
 		return err
 	}
 	return tx.Commit()
-}
-
-// replaceMappingBindings 全量替换绑定；调用方传来的重复 id 去重后插入
-func replaceMappingBindings(ctx context.Context, tx *sql.Tx, mappingID int64, modelIDs []int64) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM model_mapping_models WHERE mapping_id=?`, mappingID); err != nil {
-		return err
-	}
-	seen := make(map[int64]bool, len(modelIDs))
-	for _, mid := range modelIDs {
-		if seen[mid] {
-			continue
-		}
-		seen[mid] = true
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO model_mapping_models (mapping_id, model_id) VALUES (?, ?)`, mappingID, mid); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Store) DeleteMapping(ctx context.Context, id int64) error {
@@ -223,7 +219,7 @@ func (s *Store) ResolveMapping(ctx context.Context, name string) (*Mapping, erro
 }
 
 // ListMappingsWithEnabledModels 至少绑定了一个「启用渠道下模型实体」的映射，供 /v1/models
-func (s *Store) ListMappingsWithEnabledModels(ctx context.Context) ([]Mapping, error) {
+func (s *Store) ListMappingsWithEnabledModels(ctx context.Context) ([]PublicModel, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT mp.id, mp.name, mp.context_length, mp.max_output_tokens, mp.created_at
 		FROM model_mappings mp
@@ -236,9 +232,9 @@ func (s *Store) ListMappingsWithEnabledModels(ctx context.Context) ([]Mapping, e
 		return nil, err
 	}
 	defer rows.Close()
-	out := []Mapping{}
+	out := []PublicModel{}
 	for rows.Next() {
-		var m Mapping
+		var m PublicModel
 		var cl, mo sql.NullInt64
 		if err := rows.Scan(&m.ID, &m.Name, &cl, &mo, &m.CreatedAt); err != nil {
 			return nil, err

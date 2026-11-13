@@ -42,7 +42,7 @@ func TestEndToEnd(t *testing.T) {
 	sessions := auth.NewSessionStore(time.Hour)
 	adminH := admin.New(st, sessions, cfg.AdminPassword, reg)
 
-	srv := httptest.NewServer(buildHandler(cfg, st, engine, adminH))
+	srv := httptest.NewServer(buildHandler(st, engine, adminH))
 	defer srv.Close()
 	ctx := context.Background()
 
@@ -52,7 +52,7 @@ func TestEndToEnd(t *testing.T) {
 		Name: "up", Type: "openai", BaseURL: upstream.URL, APIKey: "k", Priority: 1,
 	})
 	m, _ := st.CreateModel(ctx, ch.ID, "glm-5.3")
-	if _, err := st.CreateMapping(ctx, "glm-5.3", &cl, nil, []int64{m.ID}, nil); err != nil {
+	if _, err := st.CreateMapping(ctx, store.MappingInput{Name: "glm-5.3", ContextLength: &cl, ModelIDs: []int64{m.ID}}); err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
 	tok, _ := st.CreateToken(ctx, "e2e")
@@ -111,10 +111,15 @@ func TestEndToEnd(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.Contains(body, `id="app"`) {
 		t.Fatalf("index: %d", resp.StatusCode)
 	}
-	resp, _ = http.Get(srv.URL + "/vendor/vue.global.prod.js")
+	resp, _ = http.Get(srv.URL + "/favicon.svg")
 	resp.Body.Close()
 	if resp.StatusCode != 200 {
-		t.Fatalf("vue vendor: %d", resp.StatusCode)
+		t.Fatalf("favicon: %d", resp.StatusCode)
+	}
+	resp, _ = http.Get(srv.URL + "/some/spa/route")
+	body = readAll(t, resp)
+	if resp.StatusCode != 200 || !strings.Contains(body, `id="app"`) {
+		t.Fatalf("SPA fallback: %d", resp.StatusCode)
 	}
 }
 

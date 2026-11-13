@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"pengapi/internal/auth"
 	"pengapi/internal/relay/provider"
 	"pengapi/internal/store"
-
-	"github.com/go-chi/chi/v5"
 )
 
 type adminEnv struct {

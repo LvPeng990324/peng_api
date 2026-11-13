@@ -22,6 +22,15 @@ func openStore(t *testing.T) *store.Store {
 	return st
 }
 
+func mustCreate(t *testing.T, ss *SessionStore) string {
+	t.Helper()
+	tok, err := ss.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	return tok
+}
+
 func TestBearer(t *testing.T) {
 	st := openStore(t)
 	tok, _ := st.CreateToken(context.Background(), "cline")
@@ -78,7 +87,7 @@ func TestBearer(t *testing.T) {
 
 func TestSessionStore(t *testing.T) {
 	ss := NewSessionStore(50 * time.Millisecond)
-	tok := ss.Create()
+	tok := mustCreate(t, ss)
 	if tok == "" {
 		t.Fatal("empty token")
 	}
@@ -92,7 +101,7 @@ func TestSessionStore(t *testing.T) {
 	if ss.Validate(tok) {
 		t.Error("expired token must not validate")
 	}
-	tok2 := ss.Create()
+	tok2 := mustCreate(t, ss)
 	ss.Delete(tok2)
 	if ss.Validate(tok2) {
 		t.Error("deleted token must not validate")
@@ -101,7 +110,7 @@ func TestSessionStore(t *testing.T) {
 
 func TestRequireSession(t *testing.T) {
 	ss := NewSessionStore(time.Hour)
-	tok := ss.Create()
+	tok := mustCreate(t, ss)
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })
 	h := RequireSession(ss)(inner)
 

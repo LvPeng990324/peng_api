@@ -2,6 +2,7 @@ package web
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -23,7 +24,17 @@ func mustSub(f embed.FS, dir string) fs.FS {
 	return sub
 }
 
-var indexHTML, _ = fs.ReadFile(distFS, "index.html")
+var indexHTML = mustReadIndex(distFS)
+
+// mustReadIndex 与 mustSub 一致：构建产物缺失属于启动期错误，直接 fail-fast，
+// 不能静默返回空页面。
+func mustReadIndex(f fs.FS) []byte {
+	b, err := fs.ReadFile(f, "index.html")
+	if err != nil {
+		panic(fmt.Errorf("web: read embedded index.html: %w", err))
+	}
+	return b
+}
 
 func serveIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -37,7 +48,7 @@ func RegisterRoutes(r chi.Router) {
 	r.Get("/assets/*", assets.ServeHTTP)
 	// SPA fallback：其余未命中的 GET 返回 index.html（/api、/v1 由 chi 精确路由优先匹配）
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasPrefix(req.URL.Path, "/api/") || strings.HasPrefix(req.URL.Path, "/v1/") {
+		if strings.HasPrefix(req.URL.Path, "/api") || strings.HasPrefix(req.URL.Path, "/v1") {
 			http.NotFound(w, req)
 			return
 		}

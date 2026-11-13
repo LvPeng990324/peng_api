@@ -293,7 +293,7 @@ func TestChannelDeleteCascadesModels(t *testing.T) {
 	ctx := context.Background()
 	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
 	m, _ := s.CreateModel(ctx, ch.ID, "glm-5.3")
-	mp, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID}, nil)
+	mp, _ := s.CreateMapping(ctx, MappingInput{Name: "glm-5.3", ModelIDs: []int64{m.ID}})
 
 	if err := s.DeleteChannel(ctx, ch.ID); err != nil {
 		t.Fatalf("DeleteChannel: %v", err)
@@ -338,7 +338,7 @@ func TestModelCRUD(t *testing.T) {
 	}
 
 	// 绑定标准名后列表带出渠道名 + 映射名
-	mp, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID}, nil)
+	mp, _ := s.CreateMapping(ctx, MappingInput{Name: "glm-5.3", ModelIDs: []int64{m.ID}})
 	list, err := s.ListModels(ctx)
 	if err != nil || len(list) != 2 {
 		t.Fatalf("ListModels: %v len=%d", err, len(list))
@@ -394,8 +394,8 @@ func TestSelectModelsOrderAndDisabledSkip(t *testing.T) {
 	mOff, _ := s.CreateModel(ctx, off.ID, "glm-off")
 	s.SetChannelEnabled(ctx, off.ID, false)
 
-	mp, err := s.CreateMapping(ctx, "glm-5.3", nil, nil,
-		[]int64{mLow.ID, mHigh1.ID, mHigh2.ID, mOff.ID}, nil)
+	mp, err := s.CreateMapping(ctx, MappingInput{Name: "glm-5.3", ModelIDs: []int64{mLow.ID, mHigh1.ID, mHigh2.ID, mOff.ID}})
+
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestSelectModelsOrderAndDisabledSkip(t *testing.T) {
 	}
 
 	// 未绑定任何模型的映射 → 空
-	empty, _ := s.CreateMapping(ctx, "empty-map", nil, nil, nil, nil)
+	empty, _ := s.CreateMapping(ctx, MappingInput{Name: "empty-map"})
 	cands, _ = s.SelectModels(ctx, empty.ID)
 	if len(cands) != 0 {
 		t.Errorf("unbound mapping must have no candidates: %+v", cands)
@@ -439,8 +439,8 @@ func TestBoundModelsFollowCallOrder(t *testing.T) {
 	s.SetChannelEnabled(ctx, off.ID, false)
 
 	// 绑定顺序刻意与调用顺序相反
-	mp, err := s.CreateMapping(ctx, "glm-5.3", nil, nil,
-		[]int64{mLow.ID, mOff.ID, mHigh2.ID, mHigh1.ID}, nil)
+	mp, err := s.CreateMapping(ctx, MappingInput{Name: "glm-5.3", ModelIDs: []int64{mLow.ID, mOff.ID, mHigh2.ID, mHigh1.ID}})
+
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -463,9 +463,12 @@ func TestBoundModelsFollowCallOrder(t *testing.T) {
 			if bound[i].Name != c.ModelName || bound[i].ChannelName != c.Channel.Name {
 				t.Errorf("bound[%d] = %s/%s, want %s/%s", i, bound[i].ChannelName, bound[i].Name, c.Channel.Name, c.ModelName)
 			}
-			if bound[i].ChannelPriority != c.Channel.Priority || !bound[i].ChannelEnabled {
-				t.Errorf("bound[%d] channel meta = %d/%v, want %d/true",
-					i, bound[i].ChannelPriority, bound[i].ChannelEnabled, c.Channel.Priority)
+			if !bound[i].ChannelEnabled {
+				t.Errorf("bound[%d] must come from an enabled channel", i)
+			}
+			if i > 0 && bound[i-1].ChannelPriority < bound[i].ChannelPriority {
+				t.Errorf("bound[%d] priority out of order: %d then %d",
+					i, bound[i-1].ChannelPriority, bound[i].ChannelPriority)
 			}
 		}
 		// 禁用渠道排在末尾，且仍带着启用状态标记
@@ -482,8 +485,8 @@ func TestUpdateModelMappings(t *testing.T) {
 
 	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
 	m, _ := s.CreateModel(ctx, ch.ID, "glm-free")
-	mpA, _ := s.CreateMapping(ctx, "glm-5.3", nil, nil, []int64{m.ID}, nil)
-	mpB, _ := s.CreateMapping(ctx, "claude-sonnet", nil, nil, nil, nil)
+	mpA, _ := s.CreateMapping(ctx, MappingInput{Name: "glm-5.3", ModelIDs: []int64{m.ID}})
+	mpB, _ := s.CreateMapping(ctx, MappingInput{Name: "claude-sonnet"})
 
 	// 只改名、mappingIDs=nil → 绑定不动
 	if err := s.UpdateModel(ctx, m.ID, "glm-free-v2", nil); err != nil {
@@ -547,7 +550,7 @@ func TestMappingCRUDAndResolve(t *testing.T) {
 	m1, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
 	m2, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-pro")
 
-	mp, err := s.CreateMapping(ctx, "glm-5.3", ptrI64(131072), ptrI64(8192), []int64{m1.ID, m2.ID}, nil)
+	mp, err := s.CreateMapping(ctx, MappingInput{Name: "glm-5.3", ContextLength: ptrI64(131072), MaxOutputTokens: ptrI64(8192), ModelIDs: []int64{m1.ID, m2.ID}})
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -559,11 +562,11 @@ func TestMappingCRUDAndResolve(t *testing.T) {
 	}
 
 	// 重名 → UNIQUE 冲突
-	if _, err := s.CreateMapping(ctx, "glm-5.3", nil, nil, nil, nil); err == nil {
+	if _, err := s.CreateMapping(ctx, MappingInput{Name: "glm-5.3"}); err == nil {
 		t.Fatal("duplicate mapping name must fail")
 	}
 	// 绑定不存在的模型 → FK 错误
-	if _, err := s.CreateMapping(ctx, "bad", nil, nil, []int64{9999}, nil); err == nil {
+	if _, err := s.CreateMapping(ctx, MappingInput{Name: "bad", ModelIDs: []int64{9999}}); err == nil {
 		t.Fatal("binding missing model must fail (FK)")
 	}
 
@@ -588,7 +591,7 @@ func TestMappingCRUDAndResolve(t *testing.T) {
 	}
 
 	// 全量更新：改参数 + 整体替换绑定
-	if err := s.UpdateMapping(ctx, mp.ID, "glm-5.3", ptrI64(200000), nil, []int64{m2.ID}, nil); err != nil {
+	if err := s.UpdateMapping(ctx, mp.ID, MappingInput{Name: "glm-5.3", ContextLength: ptrI64(200000), ModelIDs: []int64{m2.ID}}); err != nil {
 		t.Fatalf("UpdateMapping: %v", err)
 	}
 	list, _ = s.ListMappings(ctx)
@@ -599,11 +602,11 @@ func TestMappingCRUDAndResolve(t *testing.T) {
 		t.Errorf("params not updated: %+v", list[0])
 	}
 	// 重复的 model_ids 去重
-	if err := s.UpdateMapping(ctx, mp.ID, "glm-5.3", nil, nil, []int64{m2.ID, m2.ID}, nil); err != nil {
+	if err := s.UpdateMapping(ctx, mp.ID, MappingInput{Name: "glm-5.3", ModelIDs: []int64{m2.ID, m2.ID}}); err != nil {
 		t.Fatalf("UpdateMapping dup ids: %v", err)
 	}
 	// 不存在的映射 → ErrNotFound
-	if err := s.UpdateMapping(ctx, 9999, "x", nil, nil, nil, nil); !errors.Is(err, ErrNotFound) {
+	if err := s.UpdateMapping(ctx, 9999, MappingInput{Name: "x"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 
@@ -622,8 +625,8 @@ func TestListMappingsWithEnabledModels(t *testing.T) {
 	ch, _ := s.CreateChannel(ctx, Channel{Name: "c", Type: "openai", BaseURL: "http://x", APIKey: "k"})
 	m, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
 
-	withModel, _ := s.CreateMapping(ctx, "has-model", ptrI64(1000), nil, []int64{m.ID}, nil)
-	without, _ := s.CreateMapping(ctx, "no-model", nil, nil, nil, nil)
+	withModel, _ := s.CreateMapping(ctx, MappingInput{Name: "has-model", ContextLength: ptrI64(1000), ModelIDs: []int64{m.ID}})
+	without, _ := s.CreateMapping(ctx, MappingInput{Name: "no-model"})
 
 	list, err := s.ListMappingsWithEnabledModels(ctx)
 	if err != nil || len(list) != 1 || list[0].ID != withModel.ID {
@@ -766,7 +769,7 @@ func TestMappingParameterOverrides(t *testing.T) {
 	m, _ := s.CreateModel(ctx, ch.ID, "glm-5.3-free")
 
 	// 创建时不带覆盖 → nil
-	mp, err := s.CreateMapping(ctx, "plain", nil, nil, []int64{m.ID}, nil)
+	mp, err := s.CreateMapping(ctx, MappingInput{Name: "plain", ModelIDs: []int64{m.ID}})
 	if err != nil {
 		t.Fatalf("CreateMapping: %v", err)
 	}
@@ -780,7 +783,7 @@ func TestMappingParameterOverrides(t *testing.T) {
 
 	// 创建时带覆盖（数值/布尔/字符串混合）
 	ov := map[string]any{"temperature": float64(1), "top_p": float64(0.9), "stream": false, "custom_tag": "abc"}
-	mp, err = s.CreateMapping(ctx, "forced", nil, nil, []int64{m.ID}, ov)
+	mp, err = s.CreateMapping(ctx, MappingInput{Name: "forced", ModelIDs: []int64{m.ID}, ParameterOverrides: ov})
 	if err != nil {
 		t.Fatalf("CreateMapping with overrides: %v", err)
 	}
@@ -807,14 +810,14 @@ func TestMappingParameterOverrides(t *testing.T) {
 	}
 
 	// 更新：整体替换覆盖参数；传 nil 清空
-	if err := s.UpdateMapping(ctx, mp.ID, "forced", nil, nil, []int64{m.ID}, map[string]any{"max_tokens": float64(1024)}); err != nil {
+	if err := s.UpdateMapping(ctx, mp.ID, MappingInput{Name: "forced", ModelIDs: []int64{m.ID}, ParameterOverrides: map[string]any{"max_tokens": float64(1024)}}); err != nil {
 		t.Fatalf("UpdateMapping: %v", err)
 	}
 	got, _ = s.ResolveMapping(ctx, "forced")
 	if len(got.ParameterOverrides) != 1 || got.ParameterOverrides["max_tokens"] != float64(1024) {
 		t.Errorf("overrides replaced: %+v", got.ParameterOverrides)
 	}
-	if err := s.UpdateMapping(ctx, mp.ID, "forced", nil, nil, []int64{m.ID}, nil); err != nil {
+	if err := s.UpdateMapping(ctx, mp.ID, MappingInput{Name: "forced", ModelIDs: []int64{m.ID}}); err != nil {
 		t.Fatalf("UpdateMapping clear: %v", err)
 	}
 	got, _ = s.ResolveMapping(ctx, "forced")

@@ -54,7 +54,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { Modal } from 'ant-design-vue'
 import { api } from '../api'
-import { guard, loadMappings, loadModels, store } from '../store'
+import { ensureLoaded, guard, loadMappings, loadModels, store } from '../store'
 import { fmtTime } from '../utils'
 
 const columns = [
@@ -118,5 +118,5 @@ function delModel(m) {
   })
 }
 
-onMounted(() => Promise.all([loadModels(), loadMappings()]))
+onMounted(() => Promise.all([ensureLoaded('models'), ensureLoaded('mappings')]))
 </script>

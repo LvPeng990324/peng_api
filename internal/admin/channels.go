@@ -4,14 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
+	"pengapi/internal/httpx"
 	"pengapi/internal/relay/provider"
 	"pengapi/internal/store"
-
-	"github.com/go-chi/chi/v5"
 )
 
 type channelInput struct {
@@ -26,7 +24,9 @@ type channelInput struct {
 	Remark    string `json:"remark"`
 }
 
-func (in channelInput) validate() string {
+// validate 在保存渠道时就把配置错误挡住：未知协议不应等到转发时才降级成 503。
+// validType 由 provider.Registry.Has 提供，空 type 由 store 兜底为默认协议。
+func (in channelInput) validate(validType func(string) bool) string {
 	if strings.TrimSpace(in.Name) == "" {
 		return "name is required"
 	}
@@ -36,112 +36,106 @@ func (in channelInput) validate() string {
 	if strings.TrimSpace(in.APIKey) == "" {
 		return "api_key is required"
 	}
-	switch in.QuotaType {
-	case "", "openrouter", "kimi", "deepseek":
-	default:
+	if in.Type != "" && !validType(in.Type) {
+		return "unknown channel type: " + in.Type
+	}
+	if !validQuotaType(in.QuotaType) {
 		return "invalid quota_type"
 	}
 	return ""
 }
 
-func (h *Handler) listChannels(w http.ResponseWriter, r *http.Request) {
+// toChannel 是输入 DTO → 领域实体的唯一转换点，创建与编辑共用。
+func (in channelInput) toChannel(id int64, enabled bool) store.Channel {
+	return store.Channel{
+		ID: id, Name: in.Name, Type: in.Type, QuotaType: in.QuotaType,
+		BaseURL: in.BaseURL, APIKey: in.APIKey, Priority: in.Priority,
+		Enabled: enabled, TestModel: in.TestModel, Remark: in.Remark,
+	}
+}
+
+func endpointOf(ch *store.Channel) provider.Endpoint {
+	return provider.Endpoint{BaseURL: ch.BaseURL, APIKey: ch.APIKey}
+}
+
+func (h channelAPI) listChannels(w http.ResponseWriter, r *http.Request) {
 	channels, err := h.store.ListChannels(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": channels})
+	httpx.JSON(w, http.StatusOK, map[string]any{"data": channels})
 }
 
-func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
+func (h channelAPI) createChannel(w http.ResponseWriter, r *http.Request) {
 	var in channelInput
-	if !decodeJSON(w, r, &in) {
+	if !httpx.DecodeAdminJSON(w, r, &in) {
 		return
 	}
-	if msg := in.validate(); msg != "" {
-		writeErr(w, http.StatusBadRequest, msg)
+	if msg := in.validate(h.providers.Has); msg != "" {
+		httpx.Error(w, http.StatusBadRequest, msg)
 		return
 	}
-	ch := store.Channel{
-		Name: in.Name, Type: in.Type, QuotaType: in.QuotaType, BaseURL: in.BaseURL, APIKey: in.APIKey,
-		Priority: in.Priority, TestModel: in.TestModel, Remark: in.Remark,
-	}
-	created, err := h.store.CreateChannel(r.Context(), ch)
+	created, err := h.store.CreateChannel(r.Context(), in.toChannel(0, true))
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error: "+err.Error())
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	httpx.JSON(w, http.StatusCreated, created)
 }
 
-func (h *Handler) updateChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	existing, err := h.store.GetChannel(r.Context(), id)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if existing == nil {
-		writeErr(w, http.StatusNotFound, "channel not found")
+func (h channelAPI) updateChannel(w http.ResponseWriter, r *http.Request) {
+	existing, ok := h.loadChannel(w, r)
+	if !ok {
 		return
 	}
 	var in channelInput
-	if !decodeJSON(w, r, &in) {
+	if !httpx.DecodeAdminJSON(w, r, &in) {
 		return
 	}
-	if msg := in.validate(); msg != "" {
-		writeErr(w, http.StatusBadRequest, msg)
+	if msg := in.validate(h.providers.Has); msg != "" {
+		httpx.Error(w, http.StatusBadRequest, msg)
 		return
 	}
 	enabled := existing.Enabled
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
-	ch := store.Channel{
-		ID: id, Name: in.Name, Type: in.Type, QuotaType: in.QuotaType, BaseURL: in.BaseURL, APIKey: in.APIKey,
-		Priority: in.Priority, Enabled: enabled, TestModel: in.TestModel, Remark: in.Remark,
-	}
-	if err := h.store.UpdateChannel(r.Context(), ch); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error: "+err.Error())
+	if err := h.store.UpdateChannel(r.Context(), in.toChannel(existing.ID, enabled)); err != nil {
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *Handler) deleteChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
+func (h channelAPI) deleteChannel(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
 		return
 	}
 	if err := h.store.DeleteChannel(r.Context(), id); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *Handler) toggleChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
+func (h channelAPI) toggleChannel(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
 		return
 	}
 	var in struct {
 		Enabled bool `json:"enabled"`
 	}
-	if !decodeJSON(w, r, &in) {
+	if !httpx.DecodeAdminJSON(w, r, &in) {
 		return
 	}
 	if err := h.store.SetChannelEnabled(r.Context(), id, in.Enabled); err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 type fetchModelsItem struct {
@@ -151,35 +145,25 @@ type fetchModelsItem struct {
 	Exists          bool   `json:"exists"` // 是否已存在为该渠道下的模型实体
 }
 
-func (h *Handler) fetchModels(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	ch, err := h.store.GetChannel(r.Context(), id)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if ch == nil {
-		writeErr(w, http.StatusNotFound, "channel not found")
+func (h channelAPI) fetchModels(w http.ResponseWriter, r *http.Request) {
+	ch, ok := h.loadChannel(w, r)
+	if !ok {
 		return
 	}
 	p, ok := h.providers.For(ch.Type)
 	if !ok {
-		writeErr(w, http.StatusBadRequest, "unknown channel type: "+ch.Type)
+		httpx.Error(w, http.StatusBadRequest, "unknown channel type: "+ch.Type)
 		return
 	}
-	models, err := p.ListModels(r.Context(), *ch)
+	models, err := p.ListModels(r.Context(), endpointOf(ch))
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "fetch upstream models: "+err.Error())
+		httpx.Error(w, http.StatusBadGateway, "fetch upstream models: "+err.Error())
 		return
 	}
 	// 本渠道已有的模型实体名集合，用于标记上游列表中哪些已存在
-	existing, err := h.store.ModelsOfChannel(r.Context(), id)
+	existing, err := h.store.ModelsOfChannel(r.Context(), ch.ID)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
 	exists := make(map[string]bool, len(existing))
@@ -193,82 +177,66 @@ func (h *Handler) fetchModels(w http.ResponseWriter, r *http.Request) {
 			MaxOutputTokens: m.MaxOutputTokens, Exists: exists[m.ID],
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+	httpx.JSON(w, http.StatusOK, map[string]any{"data": items})
 }
 
 // addChannelModels 批量创建渠道下的模型实体：{names: [...]}，已存在的跳过（幂等）
-func (h *Handler) addChannelModels(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	ch, err := h.store.GetChannel(r.Context(), id)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if ch == nil {
-		writeErr(w, http.StatusNotFound, "channel not found")
+func (h channelAPI) addChannelModels(w http.ResponseWriter, r *http.Request) {
+	ch, ok := h.loadChannel(w, r)
+	if !ok {
 		return
 	}
 	var in struct {
 		Names []string `json:"names"`
 	}
-	if !decodeJSON(w, r, &in) {
+	if !httpx.DecodeAdminJSON(w, r, &in) {
 		return
 	}
 	if len(in.Names) == 0 {
-		writeErr(w, http.StatusBadRequest, "names is empty")
+		httpx.Error(w, http.StatusBadRequest, "names is empty")
 		return
 	}
 	for _, name := range in.Names {
 		if strings.TrimSpace(name) == "" {
-			writeErr(w, http.StatusBadRequest, "name must not be empty")
+			httpx.Error(w, http.StatusBadRequest, "name must not be empty")
 			return
 		}
 	}
 	for _, name := range in.Names {
-		if _, err := h.store.CreateModel(r.Context(), id, name); err != nil {
-			writeErr(w, http.StatusInternalServerError, "internal error: "+err.Error())
+		if _, err := h.store.CreateModel(r.Context(), ch.ID, name); err != nil {
+			httpx.InternalError(w, err)
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *Handler) testChannel(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	ch, err := h.store.GetChannel(r.Context(), id)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if ch == nil {
-		writeErr(w, http.StatusNotFound, "channel not found")
+func (h channelAPI) testChannel(w http.ResponseWriter, r *http.Request) {
+	ch, ok := h.loadChannel(w, r)
+	if !ok {
 		return
 	}
 	if ch.TestModel == "" {
-		writeErr(w, http.StatusBadRequest, "test_model not configured: add a model entity first")
+		httpx.Error(w, http.StatusBadRequest, "test_model not configured: add a model entity first")
 		return
 	}
 	p, ok := h.providers.For(ch.Type)
 	if !ok {
-		writeErr(w, http.StatusBadRequest, "unknown channel type: "+ch.Type)
+		httpx.Error(w, http.StatusBadRequest, "unknown channel type: "+ch.Type)
 		return
 	}
-	pingBody, _ := json.Marshal(map[string]any{
+	pingBody, err := json.Marshal(map[string]any{
 		"model":      ch.TestModel,
 		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
 		"max_tokens": 1,
 		"stream":     false,
 	})
+	if err != nil {
+		httpx.InternalError(w, err)
+		return
+	}
 	start := time.Now()
-	res := p.Chat(r.Context(), *ch, provider.ChatRequest{
+	res, err := p.Chat(r.Context(), endpointOf(ch), provider.ChatRequest{
 		Model: ch.TestModel, Body: pingBody, Stream: false,
 	})
 	out := map[string]any{
@@ -276,10 +244,10 @@ func (h *Handler) testChannel(w http.ResponseWriter, r *http.Request) {
 		"request_body": string(pingBody),
 	}
 	switch {
-	case res.Err != nil:
+	case err != nil:
 		out["success"] = false
-		out["error"] = res.Err.Error()
-	case res.HTTPStatus >= 200 && res.HTTPStatus < 300:
+		out["error"] = err.Error()
+	case res.OK():
 		out["success"] = true
 		out["http_status"] = res.HTTPStatus
 		out["response_body"] = string(res.Body)
@@ -289,5 +257,5 @@ func (h *Handler) testChannel(w http.ResponseWriter, r *http.Request) {
 		out["response_body"] = string(res.Body)
 		out["error"] = fmt.Sprintf("upstream returned %d", res.HTTPStatus)
 	}
-	writeJSON(w, http.StatusOK, out)
+	httpx.JSON(w, http.StatusOK, out)
 }

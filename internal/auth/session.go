@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"pengapi/internal/httpx"
 )
 
 const SessionCookie = "peng_session"
@@ -20,15 +22,17 @@ func NewSessionStore(ttl time.Duration) *SessionStore {
 	return &SessionStore{sessions: map[string]time.Time{}, ttl: ttl}
 }
 
-func (s *SessionStore) Create() string {
+func (s *SessionStore) Create() (string, error) {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
 	tok := hex.EncodeToString(b)
 	s.mu.Lock()
 	s.gcLocked(time.Now())
 	s.sessions[tok] = time.Now().Add(s.ttl)
 	s.mu.Unlock()
-	return tok
+	return tok, nil
 }
 
 func (s *SessionStore) Validate(token string) bool {
@@ -62,9 +66,7 @@ func RequireSession(ss *SessionStore) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			c, err := r.Cookie(SessionCookie)
 			if err != nil || !ss.Validate(c.Value) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error":"unauthorized"}`))
+				httpx.Error(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 			next.ServeHTTP(w, r)

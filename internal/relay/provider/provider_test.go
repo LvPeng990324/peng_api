@@ -10,14 +10,12 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"pengapi/internal/store"
 )
 
 func testClient() *http.Client { return &http.Client{} }
 
-func testChannel(baseURL string) store.Channel {
-	return store.Channel{ID: 1, Name: "fake", Type: "openai", BaseURL: baseURL, APIKey: "upkey"}
+func testEndpoint(baseURL string) Endpoint {
+	return Endpoint{BaseURL: baseURL, APIKey: "upkey"}
 }
 
 func TestOpenAIChatNonStreamSuccess(t *testing.T) {
@@ -32,11 +30,11 @@ func TestOpenAIChatNonStreamSuccess(t *testing.T) {
 	defer srv.Close()
 
 	p := NewOpenAI(testClient(), 5*time.Second, time.Second)
-	res := p.Chat(context.Background(), testChannel(srv.URL), ChatRequest{
+	res, err := p.Chat(context.Background(), testEndpoint(srv.URL), ChatRequest{
 		Model: "glm-5.3", Body: []byte(`{"model":"glm-5.3","messages":[]}`),
 	})
-	if res.Err != nil {
-		t.Fatalf("Chat: %v", res.Err)
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
 	}
 	if res.HTTPStatus != 200 || !json.Valid(res.Body) {
 		t.Errorf("unexpected result: status=%d body=%s", res.HTTPStatus, res.Body)
@@ -57,9 +55,9 @@ func TestOpenAIChatNonStreamUpstreamError(t *testing.T) {
 	defer srv.Close()
 
 	p := NewOpenAI(testClient(), 5*time.Second, time.Second)
-	res := p.Chat(context.Background(), testChannel(srv.URL), ChatRequest{Model: "m", Body: []byte(`{}`)})
-	if res.Err != nil {
-		t.Fatalf("HTTP 500 is not a transport error: %v", res.Err)
+	res, err := p.Chat(context.Background(), testEndpoint(srv.URL), ChatRequest{Model: "m", Body: []byte(`{}`)})
+	if err != nil {
+		t.Fatalf("HTTP 500 is not a transport error: %v", err)
 	}
 	if res.HTTPStatus != 500 || string(res.Body) != `{"error":{"message":"server boom"}}` {
 		t.Errorf("status/body not preserved: %d %s", res.HTTPStatus, res.Body)
@@ -68,9 +66,9 @@ func TestOpenAIChatNonStreamUpstreamError(t *testing.T) {
 
 func TestOpenAIChatConnectError(t *testing.T) {
 	p := NewOpenAI(testClient(), time.Second, time.Second)
-	res := p.Chat(context.Background(), testChannel("http://127.0.0.1:1"), ChatRequest{Model: "m", Body: []byte(`{}`)})
-	if res.Err == nil {
-		t.Fatal("connection refused must produce Err")
+	res, err := p.Chat(context.Background(), testEndpoint("http://127.0.0.1:1"), ChatRequest{Model: "m", Body: []byte(`{}`)})
+	if err == nil {
+		t.Fatal("connection refused must produce error")
 	}
 	if res.HTTPStatus != 0 {
 		t.Errorf("HTTPStatus should be 0 on transport error, got %d", res.HTTPStatus)
@@ -93,7 +91,7 @@ func TestOpenAIListModels(t *testing.T) {
 	defer srv.Close()
 
 	p := NewOpenAI(testClient(), 5*time.Second, time.Second)
-	models, err := p.ListModels(context.Background(), testChannel(srv.URL))
+	models, err := p.ListModels(context.Background(), testEndpoint(srv.URL))
 	if err != nil {
 		t.Fatalf("ListModels: %v", err)
 	}
@@ -114,7 +112,7 @@ func TestOpenAIListModelsFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := NewOpenAI(testClient(), 5*time.Second, time.Second)
-	_, err := p.ListModels(context.Background(), testChannel(srv.URL))
+	_, err := p.ListModels(context.Background(), testEndpoint(srv.URL))
 	if err == nil {
 		t.Fatal("401 must return error")
 	}
@@ -129,11 +127,11 @@ func TestOpenAIChatStreamLargeErrorBody(t *testing.T) {
 	defer srv.Close()
 
 	p := NewOpenAI(testClient(), 5*time.Second, 5*time.Second)
-	res := p.Chat(context.Background(), testChannel(srv.URL), ChatRequest{
+	res, err := p.Chat(context.Background(), testEndpoint(srv.URL), ChatRequest{
 		Model: "m", Body: []byte(`{}`), Stream: true,
 	})
-	if res.Err != nil {
-		t.Fatalf("HTTP 500 is not a transport error: %v", res.Err)
+	if err != nil {
+		t.Fatalf("HTTP 500 is not a transport error: %v", err)
 	}
 	if res.Stream != nil {
 		t.Error("stream must be nil on non-2xx")
@@ -176,10 +174,10 @@ func TestOpenAIChatStreamSuccess(t *testing.T) {
 	defer srv.Close()
 
 	p := NewOpenAI(testClient(), 5*time.Second, 5*time.Second)
-	res := p.Chat(context.Background(), testChannel(srv.URL),
+	res, err := p.Chat(context.Background(), testEndpoint(srv.URL),
 		ChatRequest{Model: "m", Body: []byte(`{"stream":true}`), Stream: true})
-	if res.Err != nil {
-		t.Fatalf("Chat stream: %v", res.Err)
+	if err != nil {
+		t.Fatalf("Chat stream: %v", err)
 	}
 	if res.Stream == nil {
 		t.Fatal("Stream must be non-nil for 2xx stream")
@@ -199,10 +197,10 @@ func TestOpenAIChatStreamHTTPErrorReadsBody(t *testing.T) {
 	defer srv.Close()
 
 	p := NewOpenAI(testClient(), 5*time.Second, 5*time.Second)
-	res := p.Chat(context.Background(), testChannel(srv.URL),
+	res, err := p.Chat(context.Background(), testEndpoint(srv.URL),
 		ChatRequest{Model: "m", Body: []byte(`{"stream":true}`), Stream: true})
-	if res.Err != nil {
-		t.Fatalf("429 is HTTP-layer, not Err: %v", res.Err)
+	if err != nil {
+		t.Fatalf("429 is HTTP-layer, not error: %v", err)
 	}
 	if res.HTTPStatus != 429 || !strings.Contains(string(res.Body), "rate limited") {
 		t.Errorf("error body should be captured: %d %s", res.HTTPStatus, res.Body)
@@ -220,10 +218,10 @@ func TestOpenAIChatStreamFirstByteTimeout(t *testing.T) {
 
 	p := NewOpenAI(testClient(), 5*time.Second, 100*time.Millisecond)
 	start := time.Now()
-	res := p.Chat(context.Background(), testChannel(srv.URL),
+	_, err := p.Chat(context.Background(), testEndpoint(srv.URL),
 		ChatRequest{Model: "m", Body: []byte(`{"stream":true}`), Stream: true})
-	if !errors.Is(res.Err, ErrStreamFirstByteTimeout) {
-		t.Fatalf("expected ErrStreamFirstByteTimeout, got %v", res.Err)
+	if !errors.Is(err, ErrStreamFirstByteTimeout) {
+		t.Fatalf("expected ErrStreamFirstByteTimeout, got %v", err)
 	}
 	if time.Since(start) > time.Second {
 		t.Error("timeout should fire quickly")
@@ -239,9 +237,9 @@ func TestOpenAIChatStreamClientCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	p := NewOpenAI(testClient(), 5*time.Second, 5*time.Second)
 	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
-	res := p.Chat(ctx, testChannel(srv.URL),
+	_, err := p.Chat(ctx, testEndpoint(srv.URL),
 		ChatRequest{Model: "m", Body: []byte(`{"stream":true}`), Stream: true})
-	if res.Err == nil {
-		t.Fatal("cancelled ctx must produce Err")
+	if err == nil {
+		t.Fatal("cancelled ctx must produce error")
 	}
 }

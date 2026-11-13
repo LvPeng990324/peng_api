@@ -21,7 +21,7 @@
 <script setup>
 import { ref } from 'vue'
 import { api } from '../api'
-import { loadAll, store } from '../store'
+import { loadInitial, store } from '../store'
 
 const password = ref('')
 const loginErr = ref('')
@@ -34,7 +34,7 @@ async function login() {
     await api('/login', { method: 'POST', body: { password: password.value } })
     store.authed = true
     password.value = ''
-    await loadAll()
+    await loadInitial()
   } catch (e) {
     loginErr.value = '登录失败：' + e.message
   } finally {

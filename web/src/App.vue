@@ -34,9 +34,9 @@
 <script setup>
 import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
-import { theme } from 'ant-design-vue'
-import { api, setUnauthorizedHandler } from './api'
-import { guard, loadAll, store, tabs } from './store'
+import { message, theme } from 'ant-design-vue'
+import { api } from './api'
+import { guard, loadInitial, store, tabs } from './store'
 // 页面组件按需加载：每个页面单独成 chunk，首屏只下载当前页代码
 // 注意必须用 defineAsyncComponent 包裹，裸的 () => import() 会被当成函数组件渲染出 [object Promise]
 const Login = defineAsyncComponent(() => import('./views/Login.vue'))
@@ -65,11 +65,11 @@ async function logout() {
 }
 
 onMounted(async () => {
-  setUnauthorizedHandler(() => { store.authed = false })
   try {
     await api('/me')
     store.authed = true
-    await guard(loadAll)
+    const ready = await guard(loadInitial)
+    if (!ready) message.warning('部分数据未加载成功，切换页面会自动重试')
   } catch (e) { /* 未登录，停在登录页 */ }
 })
 </script>

@@ -64,7 +64,7 @@
         <template v-else>-</template>
       </template>
       <template v-else-if="column.key === 'ops'">
-        <a @click="openLogDetail(l)">详情</a>
+        <a @click="detailModal.open(l)">详情</a>
       </template>
     </template>
   </a-table>
@@ -78,47 +78,16 @@
     @change="loadLogs"
   />
 
-  <!-- 详情弹窗 -->
-  <a-modal v-model:open="logDetailOpen" width="860px" :footer="null">
-    <template #title>
-      请求详情 <span class="dim mono">{{ logDetail.data?.request_id }}</span>
-    </template>
-    <a-spin :spinning="logDetailLoading" style="display: block; min-height: 160px">
-    <a-radio-group v-model:value="logDetail.sel" style="margin-bottom: 10px">
-      <a-radio-button v-for="a in logDetail.attempts" :key="a.id" :value="a.id">
-        第{{ a.attempt }}次 {{ a.channel_name }}
-        <span :style="{ color: a.status === 'success' ? '#52c41a' : '#f87171' }">{{ a.status }}</span>
-      </a-radio-button>
-    </a-radio-group>
-    <template v-if="selAttempt">
-      <p class="logs-detail-meta">
-        HTTP {{ selAttempt.http_status ?? '-' }} · 耗时 {{ fmtDur(selAttempt.latency_ms) }}<template v-if="selAttempt.first_byte_ms > 0"> · 首字 {{ fmtDur(selAttempt.first_byte_ms) }}</template> ·
-        {{ selAttempt.stream ? '流式' : '非流式' }} · {{ fmtTime(selAttempt.created_at) }}
-        · agent {{ selAttempt.agent || '-' }}
-        <template v-if="selAttempt.prompt_tokens != null"> · tokens {{ fmtTokens(selAttempt) }}</template>
-        <template v-if="tokSpeed(selAttempt)"> · 速度 {{ tokSpeed(selAttempt) }}</template>
-      </p>
-      <p v-if="selAttempt.error" class="err">{{ selAttempt.error }}</p>
-      <h4>请求体 <a class="td-link" @click="copyText(pretty(selAttempt.request_body))">复制</a></h4>
-      <pre>{{ pretty(selAttempt.request_body) }}</pre>
-      <h4>
-        响应体
-        <a class="td-link" @click="logDetail.viewRaw = !logDetail.viewRaw">{{ logDetail.viewRaw ? '查看拼接' : '查看原文' }}</a>
-        <a class="td-link" @click="copyText(logDetail.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body))">复制</a>
-      </h4>
-      <pre>{{ logDetail.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body) }}</pre>
-    </template>
-    </a-spin>
-  </a-modal>
+  <LogDetailModal ref="detailModal" />
 </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { message } from 'ant-design-vue'
+import { onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import { guard, store } from '../store'
-import { fmtTime, fmtTokens, pretty, sseText } from '../utils'
+import { cacheRate, fmtDur, fmtPromptLine, fmtTime, tokSpeed } from '../utils'
+import LogDetailModal from '../components/LogDetailModal.vue'
 
 const columns = [
   { title: '时间', key: 'created_at', width: 170 },
@@ -136,6 +105,7 @@ const columns = [
 const logs = reactive({ data: [], total: 0, page: 1, size: 20 })
 const logFilter = reactive({ model: '', status: '', agent: '', token_id: '', channel_id: '', start_time: null, end_time: null })
 const logsLoading = ref(false)
+const detailModal = ref(null)
 
 async function loadLogs() {
   logsLoading.value = true
@@ -161,76 +131,6 @@ async function loadLogs() {
 function searchLogs() {
   logs.page = 1
   loadLogs()
-}
-
-// ---- 耗时/速度 ----
-function fmtDur(ms) {
-  if (ms == null) return '-'
-  if (ms >= 1000) {
-    const s = ms / 1000
-    const r = s >= 100 ? Math.round(s) : Math.round(s * 10) / 10
-    return r + 's'
-  }
-  return ms + 'ms'
-}
-
-// 速度 = 输出 tokens / 总耗时(s)
-function tokSpeed(l) {
-  if (l.completion_tokens == null || !l.latency_ms) return ''
-  const tps = Math.round(l.completion_tokens / (l.latency_ms / 1000))
-  return tps > 0 ? tps + 't/s' : ''
-}
-
-// 输入行：命中缓存+未命中=总输入；无缓存数据时只显示总输入
-function fmtPromptLine(l) {
-  const p = l.prompt_tokens
-  const hit = l.prompt_cache_hit_tokens
-  if (hit != null && hit > 0 && p != null) return `${hit}+${p - hit}=${p}`
-  return String(p ?? '-')
-}
-
-// 缓存命中率 = 命中缓存 token / 输入总 token * 100%，保留两位小数
-function cacheRate(l) {
-  const p = l.prompt_tokens
-  const hit = l.prompt_cache_hit_tokens
-  if (hit == null || hit <= 0 || !p) return ''
-  return ((hit / p) * 100).toFixed(2)
-}
-
-// ---- 详情 ----
-const logDetailOpen = ref(false)
-const logDetail = reactive({ data: null, attempts: [], sel: null, viewRaw: false })
-const logDetailLoading = ref(false)
-
-const selAttempt = computed(() => {
-  if (!logDetail.data) return null
-  return logDetail.attempts.find(a => a.id === logDetail.sel) || logDetail.data
-})
-
-async function openLogDetail(l) {
-  logDetail.data = null
-  logDetail.attempts = []
-  logDetail.sel = null
-  logDetailLoading.value = true
-  logDetailOpen.value = true
-  await guard(async () => {
-    const v = await api('/logs/' + l.id)
-    logDetail.data = v.data
-    logDetail.attempts = v.attempts || [v.data]
-    logDetail.sel = v.data.id
-    logDetail.viewRaw = false
-  })
-  logDetailLoading.value = false
-  if (!logDetail.data) logDetailOpen.value = false // 失败已由 guard 提示
-}
-
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    message.success('已复制到剪贴板')
-  } catch (e) {
-    message.error('复制失败：' + e.message)
-  }
 }
 
 onMounted(loadLogs)

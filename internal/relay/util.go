@@ -8,45 +8,14 @@ import (
 	"strings"
 )
 
-func writeOpenAIError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{"message": msg, "type": "api_error", "code": nil},
-	})
-}
-
-func replaceModel(body []byte, model string) ([]byte, error) {
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
-		return nil, err
-	}
-	m["model"] = model
-	return json.Marshal(m)
-}
-
-// applyOverrides 把映射侧的强制参数覆盖进请求体（覆盖客户端同名字段）；
-// model 字段不在此处理，始终由 replaceModel 强制替换为模型实体名
-func applyOverrides(body []byte, overrides map[string]any) ([]byte, error) {
-	if len(overrides) == 0 {
-		return body, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
-		return nil, err
-	}
-	for k, v := range overrides {
-		m[k] = v
-	}
-	return json.Marshal(m)
-}
-
-func newUUID() string {
+func newUUID() (string, error) {
 	var b [16]byte
-	rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 // clientAgent 识别下游调用方：X-Client-Name 主动声明优先，缺省回落 User-Agent
@@ -58,8 +27,8 @@ func clientAgent(r *http.Request) string {
 }
 
 type usage struct {
-	PromptTokens     int            `json:"prompt_tokens"`
-	CompletionTokens int            `json:"completion_tokens"`
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
 
 	// 各上游缓存命中字段不同，按优先级取第一个非空：
 	// DeepSeek 系 → prompt_cache_hit_tokens；Kimi → cached_tokens；

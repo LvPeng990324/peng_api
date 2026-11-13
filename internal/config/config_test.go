@@ -162,3 +162,11 @@ func TestParseFlagOverridesEnv(t *testing.T) {
 		t.Errorf("unexpected: %+v", cfg)
 	}
 }
+
+func TestParseRejectsInvalidNumericEnv(t *testing.T) {
+	t.Setenv("PENG_ADMIN_PASSWORD", "envpass")
+	t.Setenv("PENG_REQUEST_TIMEOUT", "not-a-number")
+	if _, err := Parse(nil); err == nil {
+		t.Fatal("invalid numeric env must fail fast instead of silently using the default")
+	}
+}

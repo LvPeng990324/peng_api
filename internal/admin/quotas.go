@@ -6,15 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
-	"pengapi/internal/store"
-
-	"github.com/go-chi/chi/v5"
+	"pengapi/internal/httpx"
 )
 
-const maxQuotaResponseBytes = 1 << 20
+const (
+	maxQuotaResponseBytes = 1 << 20
+	maxQuotaErrorBytes    = 4 << 10
+)
 
 type channelQuota struct {
 	Used      *int64   `json:"used,omitempty"`
@@ -26,48 +28,104 @@ type channelQuota struct {
 	Total     *float64 `json:"total,omitempty"`
 }
 
+type quotaTypeOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type quotaFetcher func(ctx context.Context, client *http.Client, url, apiKey string) (*channelQuota, error)
+
+type quotaSource struct {
+	Label string
+	URL   string
+	Fetch quotaFetcher
+}
+
+// quotaSources 是额度类型的唯一注册点：新增一种额度只需在此加一项，
+// 校验白名单、分发逻辑和前端下拉都从这里派生。
+var quotaSources = map[string]quotaSource{
+	"openrouter": {
+		Label: "OpenRouter",
+		URL:   "https://openrouter.ai/api/v1/auth/key",
+		Fetch: fetchOpenRouter,
+	},
+	"kimi": {
+		Label: "Kimi",
+		URL:   "https://api.kimi.com/coding/v1/usages",
+		Fetch: fetchKimi,
+	},
+	"deepseek": {
+		Label: "DeepSeek",
+		URL:   "https://api.deepseek.com/user/balance",
+		Fetch: fetchDeepSeek,
+	},
+}
+
 type quotaService struct {
-	client        *http.Client
-	openRouterURL string
-	kimiURL       string
-	deepSeekURL   string
+	client      *http.Client
+	urlOverride map[string]string
 }
 
 func newQuotaService() *quotaService {
 	return &quotaService{
-		client:        &http.Client{Timeout: 10 * time.Second},
-		openRouterURL: "https://openrouter.ai/api/v1/auth/key",
-		kimiURL:       "https://api.kimi.com/coding/v1/usages",
-		deepSeekURL:   "https://api.deepseek.com/user/balance",
+		client:      &http.Client{Timeout: 10 * time.Second},
+		urlOverride: make(map[string]string),
 	}
 }
 
-func (s *quotaService) fetch(ctx context.Context, ch store.Channel) (*channelQuota, error) {
-	switch ch.QuotaType {
-	case "openrouter":
-		return s.fetchOpenRouter(ctx, ch.APIKey)
-	case "kimi":
-		return s.fetchKimi(ctx, ch.APIKey)
-	case "deepseek":
-		return s.fetchDeepSeek(ctx, ch.APIKey)
-	default:
-		return nil, fmt.Errorf("unsupported quota type %q", ch.QuotaType)
+// urlFor 默认取注册表中的 URL；只有测试需要指向假上游时才登记覆盖项，
+// 避免把整份 URL 表复制进 service 形成两份可能漂移的状态。
+func (s *quotaService) urlFor(name string) string {
+	if u, ok := s.urlOverride[name]; ok {
+		return u
 	}
+	return quotaSources[name].URL
 }
 
-func (s *quotaService) get(ctx context.Context, url, apiKey string, out any) error {
+func (s *quotaService) setURL(name, url string) { s.urlOverride[name] = url }
+
+func (s *quotaService) fetch(ctx context.Context, quotaType, apiKey string) (*channelQuota, error) {
+	src, ok := quotaSources[quotaType]
+	if !ok {
+		return nil, fmt.Errorf("unsupported quota type %q", quotaType)
+	}
+	return src.Fetch(ctx, s.client, s.urlFor(quotaType), apiKey)
+}
+
+func (s *quotaService) types() []quotaTypeOption {
+	names := make([]string, 0, len(quotaSources))
+	for name := range quotaSources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]quotaTypeOption, 0, len(names))
+	for _, name := range names {
+		out = append(out, quotaTypeOption{Value: name, Label: quotaSources[name].Label})
+	}
+	return out
+}
+
+func validQuotaType(name string) bool {
+	if name == "" {
+		return true
+	}
+	_, ok := quotaSources[name]
+	return ok
+}
+
+func getQuota(ctx context.Context, client *http.Client, url, apiKey string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := s.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxQuotaErrorBytes))
 		return fmt.Errorf("quota upstream returned %d", resp.StatusCode)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxQuotaResponseBytes)).Decode(out); err != nil {
@@ -76,7 +134,7 @@ func (s *quotaService) get(ctx context.Context, url, apiKey string, out any) err
 	return nil
 }
 
-func (s *quotaService) fetchOpenRouter(ctx context.Context, apiKey string) (*channelQuota, error) {
+func fetchOpenRouter(ctx context.Context, client *http.Client, url, apiKey string) (*channelQuota, error) {
 	var body struct {
 		Data struct {
 			FreeModelDailyRequests struct {
@@ -86,7 +144,7 @@ func (s *quotaService) fetchOpenRouter(ctx context.Context, apiKey string) (*cha
 			} `json:"free_model_daily_requests"`
 		} `json:"data"`
 	}
-	if err := s.get(ctx, s.openRouterURL, apiKey, &body); err != nil {
+	if err := getQuota(ctx, client, url, apiKey, &body); err != nil {
 		return nil, err
 	}
 	return &channelQuota{
@@ -96,13 +154,13 @@ func (s *quotaService) fetchOpenRouter(ctx context.Context, apiKey string) (*cha
 	}, nil
 }
 
-func (s *quotaService) fetchDeepSeek(ctx context.Context, apiKey string) (*channelQuota, error) {
+func fetchDeepSeek(ctx context.Context, client *http.Client, url, apiKey string) (*channelQuota, error) {
 	var body struct {
 		BalanceInfos []struct {
 			TotalBalance *string `json:"total_balance"`
 		} `json:"balance_infos"`
 	}
-	if err := s.get(ctx, s.deepSeekURL, apiKey, &body); err != nil {
+	if err := getQuota(ctx, client, url, apiKey, &body); err != nil {
 		return nil, err
 	}
 	if len(body.BalanceInfos) == 0 || body.BalanceInfos[0].TotalBalance == nil {
@@ -120,7 +178,7 @@ type kimiCount struct {
 	Remaining string `json:"remaining"`
 }
 
-func (s *quotaService) fetchKimi(ctx context.Context, apiKey string) (*channelQuota, error) {
+func fetchKimi(ctx context.Context, client *http.Client, url, apiKey string) (*channelQuota, error) {
 	var body struct {
 		Usage  *kimiCount `json:"usage"`
 		Limits []struct {
@@ -136,7 +194,7 @@ func (s *quotaService) fetchKimi(ctx context.Context, apiKey string) (*channelQu
 			Total    *kimiRatio `json:"limit_month_total"`
 		} `json:"usages"`
 	}
-	if err := s.get(ctx, s.kimiURL, apiKey, &body); err != nil {
+	if err := getQuota(ctx, client, url, apiKey, &body); err != nil {
 		return nil, err
 	}
 	quota := &channelQuota{
@@ -179,29 +237,23 @@ func countRemainingPercent(count kimiCount) *float64 {
 	return &value
 }
 
-func (h *Handler) getChannelQuota(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
-		return
-	}
-	ch, err := h.store.GetChannel(r.Context(), id)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	if ch == nil {
-		writeErr(w, http.StatusNotFound, "channel not found")
+func (h quotaAPI) listQuotaTypes(w http.ResponseWriter, r *http.Request) {
+	httpx.JSON(w, http.StatusOK, map[string]any{"data": h.svc.types()})
+}
+
+func (h quotaAPI) getChannelQuota(w http.ResponseWriter, r *http.Request) {
+	ch, ok := h.loadChannel(w, r)
+	if !ok {
 		return
 	}
 	if ch.QuotaType == "" {
-		writeErr(w, http.StatusBadRequest, "quota_type not configured")
+		httpx.Error(w, http.StatusBadRequest, "quota_type not configured")
 		return
 	}
-	quota, err := h.quotas.fetch(r.Context(), *ch)
+	quota, err := h.svc.fetch(r.Context(), ch.QuotaType, ch.APIKey)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "fetch quota: "+err.Error())
+		httpx.Error(w, http.StatusBadGateway, "fetch quota: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": quota})
+	httpx.JSON(w, http.StatusOK, map[string]any{"data": quota})
 }

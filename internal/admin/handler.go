@@ -1,86 +1,92 @@
 package admin
 
 import (
-	"encoding/json"
-	"io"
-	"net/http"
+	"github.com/go-chi/chi/v5"
 
 	"pengapi/internal/auth"
 	"pengapi/internal/relay/provider"
 	"pengapi/internal/store"
-
-	"github.com/go-chi/chi/v5"
 )
 
+// Handler 是管理端路由的组合根。只有真正需要额外依赖的资源才单独成类，
+// 其余 CRUD 共用一个 dataAPI，避免为字段可见性造出一堆同构类型。
 type Handler struct {
-	store         *store.Store
+	auth     authAPI
+	channels channelAPI
+	data     dataAPI
+	quotas   quotaAPI
+}
+
+type authAPI struct {
 	sessions      *auth.SessionStore
 	adminPassword string
-	providers     *provider.Registry
-	quotas        *quotaService
+}
+
+// storeAPI 提供共享的库访问与 id / 渠道解析。
+type storeAPI struct{ store *store.Store }
+
+type dataAPI struct{ storeAPI }
+
+type channelAPI struct {
+	storeAPI
+	providers *provider.Registry
+}
+
+type quotaAPI struct {
+	storeAPI
+	svc *quotaService
 }
 
 func New(st *store.Store, ss *auth.SessionStore, adminPassword string, reg *provider.Registry) *Handler {
-	return &Handler{store: st, sessions: ss, adminPassword: adminPassword, providers: reg, quotas: newQuotaService()}
+	data := storeAPI{store: st}
+	return &Handler{
+		auth:     authAPI{sessions: ss, adminPassword: adminPassword},
+		channels: channelAPI{storeAPI: data, providers: reg},
+		data:     dataAPI{data},
+		quotas:   quotaAPI{storeAPI: data, svc: newQuotaService()},
+	}
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/api", func(r chi.Router) {
-		r.Post("/login", h.login)
+		r.Post("/login", h.auth.login)
 		r.Group(func(r chi.Router) {
-			r.Use(auth.RequireSession(h.sessions))
-			r.Post("/logout", h.logout)
-			r.Get("/me", h.me)
+			r.Use(auth.RequireSession(h.auth.sessions))
+			r.Post("/logout", h.auth.logout)
+			r.Get("/me", h.auth.me)
 			r.Route("/models", func(r chi.Router) {
-				r.Get("/", h.listModels)
-				r.Post("/", h.createModel)
-				r.Put("/{id}", h.updateModel)
-				r.Delete("/{id}", h.deleteModel)
+				r.Get("/", h.data.listModels)
+				r.Post("/", h.data.createModel)
+				r.Put("/{id}", h.data.updateModel)
+				r.Delete("/{id}", h.data.deleteModel)
 			})
 			r.Route("/mappings", func(r chi.Router) {
-				r.Get("/", h.listMappings)
-				r.Post("/", h.createMapping)
-				r.Put("/{id}", h.updateMapping)
-				r.Delete("/{id}", h.deleteMapping)
+				r.Get("/", h.data.listMappings)
+				r.Post("/", h.data.createMapping)
+				r.Put("/{id}", h.data.updateMapping)
+				r.Delete("/{id}", h.data.deleteMapping)
 			})
 			r.Route("/tokens", func(r chi.Router) {
-				r.Get("/", h.listTokens)
-				r.Post("/", h.createToken)
-				r.Get("/{id}", h.getToken)
-				r.Put("/{id}", h.updateToken)
-				r.Delete("/{id}", h.deleteToken)
+				r.Get("/", h.data.listTokens)
+				r.Post("/", h.data.createToken)
+				r.Get("/{id}", h.data.getToken)
+				r.Put("/{id}", h.data.updateToken)
+				r.Delete("/{id}", h.data.deleteToken)
 			})
 			r.Route("/channels", func(r chi.Router) {
-				r.Get("/", h.listChannels)
-				r.Post("/", h.createChannel)
-				r.Put("/{id}", h.updateChannel)
-				r.Delete("/{id}", h.deleteChannel)
-				r.Get("/{id}/quota", h.getChannelQuota)
-				r.Post("/{id}/toggle", h.toggleChannel)
-				r.Post("/{id}/fetch-models", h.fetchModels)
-				r.Post("/{id}/models", h.addChannelModels)
-				r.Post("/{id}/test", h.testChannel)
+				r.Get("/", h.channels.listChannels)
+				r.Post("/", h.channels.createChannel)
+				r.Put("/{id}", h.channels.updateChannel)
+				r.Delete("/{id}", h.channels.deleteChannel)
+				r.Get("/{id}/quota", h.quotas.getChannelQuota)
+				r.Post("/{id}/toggle", h.channels.toggleChannel)
+				r.Post("/{id}/fetch-models", h.channels.fetchModels)
+				r.Post("/{id}/models", h.channels.addChannelModels)
+				r.Post("/{id}/test", h.channels.testChannel)
 			})
-			r.Get("/logs", h.listLogs)
-			r.Get("/logs/{id}", h.getLog)
+			r.Get("/quota-types", h.quotas.listQuotaTypes)
+			r.Get("/logs", h.data.listLogs)
+			r.Get("/logs/{id}", h.data.getLog)
 		})
 	})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeErr(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(v); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid json: "+err.Error())
-		return false
-	}
-	return true
 }

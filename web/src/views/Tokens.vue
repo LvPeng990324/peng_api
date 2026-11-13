@@ -42,7 +42,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import { api } from '../api'
-import { guard, loadTokens, store } from '../store'
+import { ensureLoaded, guard, loadTokens, store } from '../store'
 import { fmtTime } from '../utils'
 
 const columns = [
@@ -114,5 +114,5 @@ async function revealToken(t) {
   })
 }
 
-onMounted(loadTokens)
+onMounted(() => ensureLoaded('tokens'))
 </script>

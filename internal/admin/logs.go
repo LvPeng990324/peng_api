@@ -5,12 +5,11 @@ import (
 	"strconv"
 	"time"
 
+	"pengapi/internal/httpx"
 	"pengapi/internal/store"
-
-	"github.com/go-chi/chi/v5"
 )
 
-func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
+func (h dataAPI) listLogs(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := store.LogFilter{
 		Model:  q.Get("model"),
@@ -39,41 +38,37 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			f.EndTime = &t
 		}
 	}
+	// 分页归一化只有一处实现，响应里的 page/size 即实际生效的值。
+	f.Normalize()
 	logs, total, err := h.store.ListLogs(r.Context(), f)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	if f.Page < 1 {
-		f.Page = 1
-	}
-	if f.Size < 1 || f.Size > 200 {
-		f.Size = 20
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	httpx.JSON(w, http.StatusOK, map[string]any{
 		"data": logs, "total": total, "page": f.Page, "size": f.Size,
 	})
+
 }
 
-func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid id")
+func (h dataAPI) getLog(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r)
+	if !ok {
 		return
 	}
 	entry, err := h.store.GetLog(r.Context(), id)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
 	if entry == nil {
-		writeErr(w, http.StatusNotFound, "log not found")
+		httpx.Error(w, http.StatusNotFound, "log not found")
 		return
 	}
 	attempts, err := h.store.GetLogGroup(r.Context(), entry.RequestID)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "internal error")
+		httpx.InternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": entry, "attempts": attempts})
+	httpx.JSON(w, http.StatusOK, map[string]any{"data": entry, "attempts": attempts})
 }
