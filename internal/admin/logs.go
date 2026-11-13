@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"pengapi/internal/httpx"
 	"pengapi/internal/store"
 )
@@ -45,10 +47,25 @@ func (h dataAPI) listLogs(w http.ResponseWriter, r *http.Request) {
 		httpx.InternalError(w, err)
 		return
 	}
+	// 进行中的尝试只在内存里：仅首页附带，不占分页槽位、不计入 total。
+	live := []store.LogEntry{}
+	if f.Page == 1 {
+		live = h.store.ActiveAttempts(f)
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"data": logs, "total": total, "page": f.Page, "size": f.Size,
+		"data": logs, "live": live, "total": total, "page": f.Page, "size": f.Size,
 	})
 
+}
+
+// getLiveLog 按 live_key 返回进行中尝试的完整视图（含请求体）。
+func (h dataAPI) getLiveLog(w http.ResponseWriter, r *http.Request) {
+	entry, ok := h.store.ActiveLog(chi.URLParam(r, "key"))
+	if !ok {
+		httpx.Error(w, http.StatusNotFound, "live log not found")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"data": entry})
 }
 
 func (h dataAPI) getLog(w http.ResponseWriter, r *http.Request) {

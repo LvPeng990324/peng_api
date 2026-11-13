@@ -792,25 +792,67 @@ func TestMappingsAPIParameterOverrides(t *testing.T) {
 	}
 }
 
-func TestLogsAPIProcessingFilter(t *testing.T) {
+func TestLogsAPILiveRows(t *testing.T) {
 	env := newAdminEnv(t)
 	ctx := context.Background()
-	env.st.InsertLog(ctx, store.LogEntry{
-		RequestID: "req-live", Attempt: 1, ModelRequested: "m1", ModelActual: "m1-free",
-		ChannelName: "c1", Status: store.LogStatusProcessing, RequestBody: "{}",
-	})
+
+	// 一条已完成行 + 一条进行中（只在内存，从不落库）
 	env.st.InsertLog(ctx, store.LogEntry{
 		RequestID: "req-done", Attempt: 1, ModelRequested: "m1", ModelActual: "m1-free",
 		ChannelName: "c1", Status: store.LogStatusSuccess,
 	})
+	key := env.st.BeginAttempt(store.ActiveAttempt{
+		RequestID: "req-live", Attempt: 1, ModelRequested: "m1", ModelActual: "m1-free",
+		ChannelName: "c1", Stream: true, RequestBody: `{"model":"m1"}`, StartedAt: time.Now().UTC(),
+	})
+	env.st.SetAttemptProgress(key, 12)
 
-	resp := env.call(t, http.MethodGet, "/api/logs?status=processing", "")
+	// 首页：live 独立返回，不进 data、不计 total
+	resp := env.call(t, http.MethodGet, "/api/logs?page=1&size=10", "")
 	v := readJSON(t, resp)
 	if resp.StatusCode != 200 || v["total"].(float64) != 1 {
-		t.Fatalf("processing filter: %d %v", resp.StatusCode, v)
+		t.Fatalf("list: %d %v", resp.StatusCode, v)
 	}
-	list := v["data"].([]any)
-	if len(list) != 1 || list[0].(map[string]any)["status"] != store.LogStatusProcessing {
-		t.Errorf("processing row not returned: %v", list)
+	if list := v["data"].([]any); len(list) != 1 {
+		t.Errorf("data must stay DB-only: %v", list)
+	}
+	live := v["live"].([]any)
+	if len(live) != 1 {
+		t.Fatalf("live rows: %v", live)
+	}
+	row := live[0].(map[string]any)
+	if row["live_key"] != key || row["status"] != store.LogStatusProcessing {
+		t.Errorf("live row: %v", row)
+	}
+	if row["live_completion_tokens"].(float64) != 12 {
+		t.Errorf("live progress: %v", row["live_completion_tokens"])
+	}
+	if _, ok := row["request_body"]; ok {
+		t.Error("live list row must not carry body")
+	}
+
+	// 非首页不附带 live
+	resp = env.call(t, http.MethodGet, "/api/logs?page=2&size=10", "")
+	v = readJSON(t, resp)
+	if live := v["live"].([]any); len(live) != 0 {
+		t.Errorf("live must only be attached on page 1: %v", live)
+	}
+
+	// live 详情带请求体
+	resp = env.call(t, http.MethodGet, "/api/logs/live/"+key, "")
+	v = readJSON(t, resp)
+	if resp.StatusCode != 200 {
+		t.Fatalf("live detail: %d %v", resp.StatusCode, v)
+	}
+	detail := v["data"].(map[string]any)
+	if detail["request_body"] != `{"model":"m1"}` || detail["live_key"] != key {
+		t.Errorf("live detail: %v", detail)
+	}
+
+	// 不存在的 key 返回 404
+	resp = env.call(t, http.MethodGet, "/api/logs/live/missing:1", "")
+	readJSON(t, resp)
+	if resp.StatusCode != 404 {
+		t.Errorf("missing live key: %d", resp.StatusCode)
 	}
 }

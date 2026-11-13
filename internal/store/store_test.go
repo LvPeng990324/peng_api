@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -826,131 +827,128 @@ func TestMappingParameterOverrides(t *testing.T) {
 	}
 }
 
-// ---- processing 日志：请求进入即写一行，结束时原地回填 ----
+// ---- 进行中的尝试：只存内存，不落库 ----
 
-func TestUpdateLogBackfillsProcessingRow(t *testing.T) {
+func TestActiveAttemptLifecycle(t *testing.T) {
 	s := openTest(t)
-	ctx := context.Background()
-	started := time.Now().UTC().Add(-3 * time.Second).Truncate(time.Second)
-	e := LogEntry{
+	started := time.Now().UTC().Truncate(time.Second)
+	key := s.BeginAttempt(ActiveAttempt{
 		RequestID: "req-live", Attempt: 1, TokenName: "tester", Agent: "cline",
 		ModelRequested: "m1", ModelCanonical: "m1", ModelActual: "m1-free",
-		ChannelName: "c1", Status: LogStatusProcessing,
-		RequestBody: `{"model":"m1"}`, CreatedAt: started,
-	}
-	id, err := s.InsertLog(ctx, e)
-	if err != nil {
-		t.Fatalf("InsertLog: %v", err)
-	}
-
-	// 尝试结束后回填终态：可变列全部更新，请求侧字段与 created_at 不动。
-	code, prompt, completion, hit := 200, 7, 3, 2
-	e.ID = id
-	e.Status = LogStatusSuccess
-	e.HTTPStatus, e.PromptTokens = &code, &prompt
-	e.CompletionTokens, e.PromptCacheHitTokens = &completion, &hit
-	e.ResponseBody = `{"choices":[]}`
-	e.LatencyMS, e.FirstByteMS = 1234, 88
-	if err := s.UpdateLog(ctx, e); err != nil {
-		t.Fatalf("UpdateLog: %v", err)
+		ChannelName: "c1", Stream: true, RequestBody: `{"model":"m1"}`,
+		StartedAt: started,
+	})
+	if key == "" {
+		t.Fatal("BeginAttempt must return a key")
 	}
 
-	got, err := s.GetLog(ctx, id)
-	if err != nil || got == nil {
-		t.Fatalf("GetLog: %v %+v", err, got)
+	live := s.ActiveAttempts(LogFilter{})
+	if len(live) != 1 {
+		t.Fatalf("active attempts: %d", len(live))
 	}
-	if got.Status != LogStatusSuccess || got.HTTPStatus == nil || *got.HTTPStatus != 200 {
-		t.Errorf("status/http_status not backfilled: %+v", got)
+	l := live[0]
+	if l.Status != LogStatusProcessing || l.LiveKey != key || l.RequestID != "req-live" {
+		t.Errorf("active row: %+v", l)
 	}
-	if got.ResponseBody != `{"choices":[]}` || got.Error != "" {
-		t.Errorf("response body/error not backfilled: %+v", got)
+	// 列表视图保持精简：不带请求体，未上报进度时没有虚拟 token 字段
+	if l.RequestBody != "" || l.LiveCompletionTokens != nil {
+		t.Errorf("list view must stay slim: %+v", l)
 	}
-	if got.PromptTokens == nil || *got.PromptTokens != 7 ||
-		got.CompletionTokens == nil || *got.CompletionTokens != 3 ||
-		got.PromptCacheHitTokens == nil || *got.PromptCacheHitTokens != 2 {
-		t.Errorf("tokens not backfilled: %+v", got)
+	if l.CreatedAt.Unix() != started.Unix() {
+		t.Errorf("started_at: %v want %v", l.CreatedAt, started)
 	}
-	if got.LatencyMS != 1234 || got.FirstByteMS != 88 {
-		t.Errorf("latency not backfilled: %+v", got)
+
+	s.SetAttemptProgress(key, 42)
+	live = s.ActiveAttempts(LogFilter{})
+	if live[0].LiveCompletionTokens == nil || *live[0].LiveCompletionTokens != 42 {
+		t.Errorf("progress not attached: %+v", live[0].LiveCompletionTokens)
 	}
-	// created_at 是请求开始时间，回填不得改写
-	if got.CreatedAt.Unix() != started.Unix() {
-		t.Errorf("created_at must stay at request start: %v want %v", got.CreatedAt, started)
+
+	// 详情带完整请求体
+	full, ok := s.ActiveLog(key)
+	if !ok || full == nil || full.RequestBody != `{"model":"m1"}` || full.LiveKey != key {
+		t.Errorf("active detail: %+v ok=%v", full, ok)
 	}
-	if got.RequestID != "req-live" || got.ModelActual != "m1-free" || got.RequestBody != `{"model":"m1"}` {
-		t.Errorf("request-side fields must be immutable: %+v", got)
+
+	// 落库后释放：内存行消失，且它从未写入 request_logs
+	s.EndAttempt(key)
+	if len(s.ActiveAttempts(LogFilter{})) != 0 {
+		t.Error("EndAttempt must remove the row")
 	}
-	_, total, _ := s.ListLogs(ctx, LogFilter{Page: 1, Size: 10})
-	if total != 1 {
-		t.Errorf("update must not add a row: total=%d", total)
+	if _, ok := s.ActiveLog(key); ok {
+		t.Error("ended attempt must not be reachable")
+	}
+	if _, total, _ := s.ListLogs(context.Background(), LogFilter{Page: 1, Size: 10}); total != 0 {
+		t.Errorf("active attempts must not touch request_logs: total=%d", total)
 	}
 }
 
-func TestUpdateLogNotFound(t *testing.T) {
+func TestActiveAttemptsFilterAndOrder(t *testing.T) {
 	s := openTest(t)
-	err := s.UpdateLog(context.Background(), LogEntry{ID: 999, Status: LogStatusSuccess})
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("want ErrNotFound, got %v", err)
-	}
-}
+	tok1, tok2 := int64(1), int64(2)
+	ch1, ch2 := int64(10), int64(20)
+	base := time.Now().UTC()
+	s.BeginAttempt(ActiveAttempt{
+		RequestID: "r1", Attempt: 1, TokenID: &tok1, TokenName: "t1", Agent: "cline",
+		ModelRequested: "GLM5.3", ModelCanonical: "glm-5.3", ModelActual: "glm-5.3-free",
+		ChannelID: &ch1, ChannelName: "zhipu", StartedAt: base.Add(-2 * time.Minute),
+	})
+	s.BeginAttempt(ActiveAttempt{
+		RequestID: "r2", Attempt: 1, TokenID: &tok2, TokenName: "t2", Agent: "kimi-code",
+		ModelRequested: "k2", ModelCanonical: "k2", ModelActual: "k2-free",
+		ChannelID: &ch2, ChannelName: "moonshot", StartedAt: base,
+	})
 
-func TestMarkInterruptedOnlyStaleProcessing(t *testing.T) {
-	s := openTest(t)
-	ctx := context.Background()
-	now := time.Now().UTC()
-	old := now.Add(-time.Hour)
-	base := LogEntry{Attempt: 1, ModelRequested: "m1", RequestBody: "{}"}
 	cases := []struct {
-		name   string
-		status string
-		at     time.Time
-		error  string
+		name string
+		f    LogFilter
+		want int
 	}{
-		{"stale-processing", LogStatusProcessing, old, ""},
-		{"fresh-processing", LogStatusProcessing, now, ""},
-		{"finished-success", LogStatusSuccess, old, ""},
-		{"finished-failed", LogStatusFailed, old, "upstream 500"},
+		{"all", LogFilter{}, 2},
+		{"status processing", LogFilter{Status: LogStatusProcessing}, 2},
+		{"status failed excludes live", LogFilter{Status: LogStatusFailed}, 0},
+		{"model requested", LogFilter{Model: "glm5.3"}, 1},
+		{"model canonical", LogFilter{Model: "glm-5.3"}, 1},
+		{"model actual", LogFilter{Model: "k2-free"}, 1},
+		{"agent fuzzy", LogFilter{Agent: "kimi"}, 1},
+		{"token id", LogFilter{TokenID: &tok1}, 1},
+		{"channel id", LogFilter{ChannelID: &ch2}, 1},
+		{"start after", LogFilter{StartTime: ptrTime(base.Add(-time.Minute))}, 1},
+		{"end before", LogFilter{EndTime: ptrTime(base.Add(-time.Minute))}, 1},
 	}
-	ids := make([]int64, len(cases))
-	for i, c := range cases {
-		e := base
-		e.RequestID = "req-" + c.name
-		e.Status, e.CreatedAt, e.Error = c.status, c.at, c.error
-		id, err := s.InsertLog(ctx, e)
-		if err != nil {
-			t.Fatalf("InsertLog %s: %v", c.name, err)
-		}
-		ids[i] = id
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := len(s.ActiveAttempts(tc.f)); got != tc.want {
+				t.Errorf("got %d, want %d", got, tc.want)
+			}
+		})
 	}
 
-	n, err := s.MarkInterrupted(ctx, now.Add(-10*time.Minute), "interrupted (timeout)")
-	if err != nil || n != 1 {
-		t.Fatalf("MarkInterrupted: n=%d err=%v", n, err)
+	// 按开始时间倒序：新的在前
+	live := s.ActiveAttempts(LogFilter{})
+	if live[0].RequestID != "r2" || live[1].RequestID != "r1" {
+		t.Errorf("order: %q %q", live[0].RequestID, live[1].RequestID)
 	}
-	assertStatus := func(i int, wantStatus, wantError string) {
-		t.Helper()
-		got, err := s.GetLog(ctx, ids[i])
-		if err != nil || got == nil {
-			t.Fatalf("GetLog %d: %v", i, err)
-		}
-		if got.Status != wantStatus || got.Error != wantError {
-			t.Errorf("row %d: status=%q error=%q, want %q/%q", i, got.Status, got.Error, wantStatus, wantError)
-		}
-	}
-	assertStatus(0, LogStatusFailed, "interrupted (timeout)")
-	assertStatus(1, LogStatusProcessing, "")
-	assertStatus(2, LogStatusSuccess, "")
-	assertStatus(3, LogStatusFailed, "upstream 500")
-
-	// 幂等：再扫一次没有新行可清
-	n, err = s.MarkInterrupted(ctx, now.Add(-10*time.Minute), "interrupted (timeout)")
-	if err != nil || n != 0 {
-		t.Errorf("second sweep: n=%d err=%v", n, err)
-	}
-	// 启动时 cutoff=now 之后，所有遗留 processing 一次性收口
-	n, err = s.MarkInterrupted(ctx, now.Add(time.Minute), "interrupted (server restarted)")
-	if err != nil || n != 1 {
-		t.Errorf("startup sweep: n=%d err=%v", n, err)
-	}
-	assertStatus(1, LogStatusFailed, "interrupted (server restarted)")
 }
+
+func TestActiveAttemptsConcurrent(t *testing.T) {
+	s := openTest(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := s.BeginAttempt(ActiveAttempt{RequestID: "r", Attempt: i, StartedAt: time.Now().UTC()})
+			s.SetAttemptProgress(key, i)
+			_ = s.ActiveAttempts(LogFilter{})
+			_, _ = s.ActiveLog(key)
+			s.EndAttempt(key)
+		}(i)
+	}
+	wg.Wait()
+	if n := len(s.ActiveAttempts(LogFilter{})); n != 0 {
+		t.Errorf("concurrent attempts leaked: %d", n)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }

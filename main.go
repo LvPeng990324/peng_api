@@ -25,12 +25,9 @@ import (
 const (
 	logCleanupInterval = 24 * time.Hour
 	logCleanupTimeout  = 30 * time.Second
-	logJanitorInterval = 1 * time.Minute
-	// 流式请求没有总超时，阈值宁大勿小，避免把长跑请求误判为中断
-	processingStaleAfter = 10 * time.Minute
-	shutdownTimeout      = 10 * time.Second
-	readHeaderTimeout    = 30 * time.Second
-	sessionTTL           = 7 * 24 * time.Hour
+	shutdownTimeout    = 10 * time.Second
+	readHeaderTimeout  = 30 * time.Second
+	sessionTTL         = 7 * 24 * time.Hour
 )
 
 func buildHandler(st *store.Store, engine *relay.Engine, adminH *admin.Handler) http.Handler {
@@ -44,34 +41,6 @@ func buildHandler(st *store.Store, engine *relay.Engine, adminH *admin.Handler) 
 	adminH.RegisterRoutes(r)
 	web.RegisterRoutes(r)
 	return r
-}
-
-// markInterrupted 收口被中断的 processing 行：进程被 kill / 收口写超时都会留下僵尸行。
-// 启动时 cutoff=now 清掉上次进程的全部遗留；周期任务只清超过阈值的行。
-func markInterrupted(st *store.Store, cutoff time.Time, reason string) {
-	cctx, cancel := context.WithTimeout(context.Background(), logCleanupTimeout)
-	defer cancel()
-	if n, err := st.MarkInterrupted(cctx, cutoff, reason); err != nil {
-		log.Printf("log janitor: %v", err)
-	} else if n > 0 {
-		log.Printf("log janitor: marked %d interrupted rows (%s)", n, reason)
-	}
-}
-
-// startLogJanitor 周期清理僵尸 processing 行，进程退出时随 ctx 停止。
-func startLogJanitor(ctx context.Context, st *store.Store) {
-	go func() {
-		ticker := time.NewTicker(logJanitorInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				markInterrupted(st, time.Now().UTC().Add(-processingStaleAfter), "interrupted (timeout)")
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
 }
 
 // startLogCleaner 启动时清理一次，之后按周期清理，进程退出时随 ctx 停止。
@@ -114,9 +83,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	markInterrupted(st, time.Now().UTC(), "interrupted (server restarted)")
 	startLogCleaner(ctx, st, cfg.LogRetentionDays)
-	startLogJanitor(ctx, st)
 
 	// 上游 http.Client：连接超时走 Transport；整体/首字节超时由 provider 控制
 	// 不设 Client.Timeout（会杀死流式响应）

@@ -16,6 +16,7 @@
           {{ selAttempt.stream ? '流式' : '非流式' }} · {{ fmtTime(selAttempt.created_at) }}
           · agent {{ selAttempt.agent || '-' }}
           <template v-if="selAttempt.prompt_tokens != null"> · tokens {{ fmtTokens(selAttempt) }}</template>
+          <template v-if="liveOutput(selAttempt)"> · 输出 {{ liveOutput(selAttempt) }}</template>
           <template v-if="tokSpeed(selAttempt)"> · 速度 {{ tokSpeed(selAttempt) }}</template>
         </p>
         <p v-if="selAttempt.error" class="err">{{ selAttempt.error }}</p>
@@ -40,7 +41,7 @@ import { computed, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { api } from '../api'
 import { guard } from '../store'
-import { fmtDur, fmtTime, fmtTokens, pretty, sseText, statusLabel, statusTextColor, tokSpeed } from '../utils'
+import { fmtDur, fmtTime, fmtTokens, liveOutput, pretty, sseText, statusLabel, statusTextColor, tokSpeed } from '../utils'
 
 const visible = ref(false)
 const state = reactive({ data: null, attempts: [], sel: null, viewRaw: false, loading: false })
@@ -57,10 +58,13 @@ async function open(log) {
   state.loading = true
   visible.value = true
   await guard(async () => {
-    const v = await api('/logs/' + log.id)
+    // 进行中的行还没有自增 id，按 live_key 取内存快照
+    const v = log.live_key
+      ? await api('/logs/live/' + encodeURIComponent(log.live_key))
+      : await api('/logs/' + log.id)
     state.data = v.data
     state.attempts = v.attempts || [v.data]
-    state.sel = v.data.id
+    state.sel = v.data.id ?? 0
     state.viewRaw = false
   })
   state.loading = false

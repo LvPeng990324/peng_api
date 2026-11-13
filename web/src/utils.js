@@ -114,3 +114,14 @@ export function fmtElapsed(createdAt, now = Date.now()) {
   if (!Number.isFinite(t)) return '-'
   return fmtDur(Math.max(0, now - t))
 }
+
+// 进行中流式行的近似输出 token（按 SSE chunk 累计，不是精确 usage），标注「约」避免误读
+export function liveOutput(l) {
+  if (l.status !== 'processing' || l.live_completion_tokens == null) return ''
+  return '约 ' + l.live_completion_tokens
+}
+
+// 日志行的表格 key：进行中的行没有自增 id，用 live_key
+export function logRowKey(l) {
+  return l.live_key || l.id
+}

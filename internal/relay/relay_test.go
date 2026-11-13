@@ -783,28 +783,32 @@ func TestEngineProcessingLogVisibleBeforeResponse(t *testing.T) {
 		t.Fatal("upstream did not receive request")
 	}
 
-	// 上游仍阻塞、客户端响应尚未写出：日志页此刻必须已能看到一条 processing
-	logs, total, err := env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
-	if err != nil || total != 1 {
-		t.Fatalf("processing row must exist before response: total=%d err=%v", total, err)
+	// 上游仍阻塞、客户端响应尚未写出：内存里必须已有一条 processing，DB 里一行都没有
+	liveRows := env.st.ActiveAttempts(store.LogFilter{})
+	if len(liveRows) != 1 {
+		t.Fatalf("active attempt must exist before response: %d", len(liveRows))
 	}
-	live := logs[0]
-	if live.Status != store.LogStatusProcessing {
-		t.Errorf("status = %q, want processing", live.Status)
+	live := liveRows[0]
+	if live.Status != store.LogStatusProcessing || live.LiveKey == "" {
+		t.Errorf("active row: %+v", live)
 	}
 	if live.RequestID == "" || live.ModelRequested != "m1" || live.ModelActual != "m1-free" {
 		t.Errorf("processing row missing request context: %+v", live)
 	}
-	// 列表视图不带 body 列，请求体/响应体要从详情视图验证
-	fullLive, err := env.st.GetLog(context.Background(), live.ID)
-	if err != nil || fullLive == nil {
-		t.Fatalf("GetLog: %v %+v", err, fullLive)
-	}
-	if fullLive.RequestBody == "" || fullLive.ResponseBody != "" || fullLive.LatencyMS != 0 {
-		t.Errorf("processing row must carry request body only: %+v", fullLive)
-	}
 	if live.CreatedAt.IsZero() {
 		t.Error("processing row must have a start timestamp")
+	}
+	// 列表视图不带 body；详情带请求体、无响应体
+	if live.RequestBody != "" {
+		t.Errorf("list view must not carry body: %+v", live)
+	}
+	fullLive, ok := env.st.ActiveLog(live.LiveKey)
+	if !ok || fullLive == nil || fullLive.RequestBody == "" || fullLive.ResponseBody != "" {
+		t.Errorf("active detail: %+v ok=%v", fullLive, ok)
+	}
+	// 关键：进行中的尝试从不写 request_logs
+	if _, total, err := env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10}); err != nil || total != 0 {
+		t.Fatalf("processing must not touch request_logs: total=%d err=%v", total, err)
 	}
 
 	unblock()
@@ -816,15 +820,15 @@ func TestEngineProcessingLogVisibleBeforeResponse(t *testing.T) {
 		t.Fatalf("chat: %d", resp.StatusCode)
 	}
 
-	// 结束后更新同一行，不新增行、不改请求开始时间
-	logs, total, err = env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
+	// 结束后只落一行、内存释放；created_at 保持请求开始时间
+	if n := len(env.st.ActiveAttempts(store.LogFilter{})); n != 0 {
+		t.Errorf("active attempt must be released: %d", n)
+	}
+	logs, total, err := env.st.ListLogs(context.Background(), store.LogFilter{Page: 1, Size: 10})
 	if err != nil || total != 1 {
-		t.Fatalf("must not add a row: total=%d err=%v", total, err)
+		t.Fatalf("exactly one row after finish: total=%d err=%v", total, err)
 	}
 	got := logs[0]
-	if got.ID != live.ID {
-		t.Errorf("must update the same row: %d vs %d", got.ID, live.ID)
-	}
 	if got.Status != store.LogStatusSuccess {
 		t.Errorf("final status = %q", got.Status)
 	}
@@ -833,10 +837,10 @@ func TestEngineProcessingLogVisibleBeforeResponse(t *testing.T) {
 		t.Fatalf("GetLog: %v %+v", err, fullGot)
 	}
 	if fullGot.ResponseBody == "" || got.LatencyMS <= 0 {
-		t.Errorf("response/latency not backfilled: %+v", fullGot)
+		t.Errorf("response/latency not stored: %+v", fullGot)
 	}
 	if got.PromptTokens == nil || *got.PromptTokens != 3 {
-		t.Errorf("usage not backfilled: %+v", got.PromptTokens)
+		t.Errorf("usage not stored: %+v", got.PromptTokens)
 	}
 	if got.CreatedAt.Unix() != live.CreatedAt.Unix() {
 		t.Error("created_at must stay at request start")
@@ -858,52 +862,12 @@ func TestEngineNoProcessingLeftOnFailure(t *testing.T) {
 	if total != 1 || logs[0].Status != store.LogStatusFailed {
 		t.Fatalf("failed attempt must be finalized: total=%d %+v", total, logs)
 	}
-	rows, n, _ := env.st.ListLogs(context.Background(),
-		store.LogFilter{Status: store.LogStatusProcessing, Page: 1, Size: 10})
-	if n != 0 || len(rows) != 0 {
-		t.Errorf("processing rows must not leak: total=%d", n)
+	if n := len(env.st.ActiveAttempts(store.LogFilter{})); n != 0 {
+		t.Errorf("active attempt must be released: %d", n)
 	}
 }
 
-func TestFinishLogGuardsUnfinishedStatus(t *testing.T) {
-	// panic 被 Recoverer 兜住时 defer 仍执行：终态可能没写，也可能还停在 processing
-	for _, tc := range []struct{ name, status string }{
-		{"empty status", ""},
-		{"still processing", store.LogStatusProcessing},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			st, err := store.Open(":memory:")
-			if err != nil {
-				t.Fatalf("Open: %v", err)
-			}
-			defer st.Close()
-			e := NewEngine(st, provider.NewRegistry())
-			ctx := context.Background()
-
-			entry := store.LogEntry{RequestID: "req-panic", Attempt: 1, ModelRequested: "m1", ModelActual: "m1", RequestBody: "{}"}
-			id := e.startLog(&entry)
-			if id == 0 {
-				t.Fatal("startLog must insert a processing row")
-			}
-			entry.Status = tc.status
-			e.finishLog(id, &entry)
-
-			got, err := st.GetLog(ctx, id)
-			if err != nil || got == nil {
-				t.Fatalf("GetLog: %v %+v", err, got)
-			}
-			if got.Status != store.LogStatusFailed || !strings.Contains(got.Error, "interrupted") {
-				t.Errorf("unfinished status must become failed/interrupted: %+v", got)
-			}
-			_, total, _ := st.ListLogs(ctx, store.LogFilter{Page: 1, Size: 10})
-			if total != 1 {
-				t.Errorf("must not add a row: total=%d", total)
-			}
-		})
-	}
-}
-
-func TestFinishLogFallsBackToInsert(t *testing.T) {
+func TestFinishLogWritesOnceAndReleases(t *testing.T) {
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -912,20 +876,71 @@ func TestFinishLogFallsBackToInsert(t *testing.T) {
 	e := NewEngine(st, provider.NewRegistry())
 	ctx := context.Background()
 
-	// startLog 写失败（id=0）时，结束时仍要补一条完整记录
-	entry := store.LogEntry{
-		RequestID: "req-fallback", Attempt: 1, ModelRequested: "m1", ModelActual: "m1",
-		Status: store.LogStatusSuccess, ResponseBody: "ok", LatencyMS: 42,
-		CreatedAt: time.Now().UTC(),
-	}
-	e.finishLog(0, &entry)
+	// panic 被 Recoverer 兜住时 defer 仍执行，此时终态可能没写
+	key := st.BeginAttempt(store.ActiveAttempt{RequestID: "req-panic", Attempt: 1, StartedAt: time.Now().UTC()})
+	entry := store.LogEntry{RequestID: "req-panic", Attempt: 1, ModelRequested: "m1", ModelActual: "m1", RequestBody: "{}"}
+	e.finishLog(key, &entry)
 
 	logs, total, _ := st.ListLogs(ctx, store.LogFilter{Page: 1, Size: 10})
-	full, err := st.GetLog(ctx, logs[0].ID)
-	if err != nil || full == nil {
-		t.Fatalf("GetLog: %v %+v", err, full)
+	if total != 1 || logs[0].Status != store.LogStatusFailed || !strings.Contains(logs[0].Error, "interrupted") {
+		t.Errorf("unfinished attempt must land as failed/interrupted: total=%d %+v", total, logs)
 	}
-	if total != 1 || full.Status != store.LogStatusSuccess || full.ResponseBody != "ok" {
-		t.Errorf("fallback insert: total=%d %+v", total, full)
+	if n := len(st.ActiveAttempts(store.LogFilter{})); n != 0 {
+		t.Errorf("active attempt must be released: %d", n)
+	}
+}
+
+func TestCountStreamDelta(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want int
+	}{
+		{"content", `data: {"choices":[{"delta":{"content":"你好"}}]}`, 1},
+		{"reasoning", `data: {"choices":[{"delta":{"reasoning_content":"想"}}]}`, 1},
+		{"role only", `data: {"choices":[{"delta":{"role":"assistant"}}]}`, 0},
+		{"empty delta", `data: {"choices":[{"delta":{}}]}`, 0},
+		{"usage only", `data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}`, 0},
+		{"done", `data: [DONE]`, 0},
+		{"comment", `: keep-alive`, 0},
+		{"blank", ``, 0},
+		{"not data", `event: message`, 0},
+		{"multi choices counts once", `data: {"choices":[{"delta":{"content":"a"}},{"delta":{"content":"b"}}]}`, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countStreamDelta([]byte(tc.line)); got != tc.want {
+				t.Errorf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFinishStreamReportsProgress(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"role":"assistant"}}]}`,
+		`data: {"choices":[{"delta":{"content":"你"}}]}`,
+		`data: {"choices":[{"delta":{"content":"好"}}]}`,
+		`data: {"choices":[{"delta":{"reasoning_content":"嗯"}}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":3}}`,
+		`data: [DONE]`,
+		``,
+	}, "\n\n")
+
+	rec := httptest.NewRecorder()
+	entry := &store.LogEntry{}
+	var reports []int
+	finishStreamWithProgress(rec, io.NopCloser(strings.NewReader(body)), entry, time.Now(),
+		func(n int) { reports = append(reports, n) })
+
+	if entry.Status != store.LogStatusSuccess || entry.ResponseBody == "" {
+		t.Fatalf("stream not finalized: %+v", entry)
+	}
+	if entry.CompletionTokens == nil || *entry.CompletionTokens != 3 {
+		t.Errorf("usage not parsed: %+v", entry.CompletionTokens)
+	}
+	// 无论流多短，收口时都要上报一次最终近似值
+	if len(reports) == 0 || reports[len(reports)-1] != 3 {
+		t.Errorf("final progress report: %v", reports)
 	}
 }

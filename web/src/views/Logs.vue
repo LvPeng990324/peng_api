@@ -34,7 +34,7 @@
     </a-form-item>
   </a-form>
 
-  <a-table :scroll="{ x: 'max-content' }" :data-source="logs.data" :columns="columns" row-key="id" :pagination="false" size="middle" :loading="logsLoading">
+  <a-table :scroll="{ x: 'max-content' }" :data-source="logs.data" :columns="columns" :row-key="logRowKey" :pagination="false" size="middle" :loading="logsLoading">
     <template #bodyCell="{ column, record: l }">
       <template v-if="column.key === 'created_at'">{{ fmtTime(l.created_at) }}</template>
       <template v-else-if="column.key === 'model'">
@@ -68,6 +68,10 @@
           <div v-if="cacheRate(l)">命中 {{ cacheRate(l) }}%</div>
           <div>输出 {{ l.completion_tokens ?? '-' }}</div>
         </div>
+        <div v-else-if="liveOutput(l)" class="tokens-cell">
+          <div class="dim">输入 -</div>
+          <div>输出 {{ liveOutput(l) }}</div>
+        </div>
         <template v-else>-</template>
       </template>
       <template v-else-if="column.key === 'ops'">
@@ -95,7 +99,7 @@ import { api } from '../api'
 import { guard, store } from '../store'
 import {
   cacheRate, fmtDur, fmtElapsed, fmtPromptLine, fmtTime,
-  statusLabel, statusTagColor, tokSpeed,
+  liveOutput, logRowKey, statusLabel, statusTagColor, tokSpeed,
 } from '../utils'
 import LogDetailModal from '../components/LogDetailModal.vue'
 
@@ -141,7 +145,8 @@ async function loadLogs({ silent = false } = {}) {
       if (logFilter.start_time) q.set('start_time', logFilter.start_time.toISOString())
       if (logFilter.end_time) q.set('end_time', logFilter.end_time.toISOString())
       const v = await api('/logs?' + q)
-      logs.data = v.data || []
+      // live 是进行中的内存行，置顶展示；它不计入 total、不占分页槽位
+      logs.data = [...(v.live || []), ...(v.data || [])]
       logs.total = v.total
     })
   } finally {

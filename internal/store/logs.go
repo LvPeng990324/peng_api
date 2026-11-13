@@ -31,6 +31,11 @@ type LogEntry struct {
 	LatencyMS            int64     `json:"latency_ms"`
 	FirstByteMS          int64     `json:"first_byte_ms"`
 	CreatedAt            time.Time `json:"created_at"`
+
+	// 仅内存行使用，不进 logColumns、不落库：
+	// live_key 是进行中尝试的稳定标识（request_id:attempt），live_completion_tokens 是流式近似已输出 token。
+	LiveKey              string `json:"live_key,omitempty"`
+	LiveCompletionTokens *int   `json:"live_completion_tokens,omitempty"`
 }
 
 // logColumns 是 request_logs 的唯一列顺序定义：INSERT 列清单、SELECT 列清单、
@@ -100,42 +105,6 @@ func (s *Store) InsertLog(ctx context.Context, e LogEntry) (int64, error) {
 		return 0, err
 	}
 	return res.LastInsertId()
-}
-
-// UpdateLog 回填一次尝试的终态，只更新响应侧列：
-// 请求侧字段与 created_at（请求开始时间）在 INSERT 时已确定，不得改写。
-func (s *Store) UpdateLog(ctx context.Context, e LogEntry) error {
-	q := `UPDATE request_logs SET status=?, http_status=?, error=?, response_body=?,
-		prompt_tokens=?, completion_tokens=?, prompt_cache_hit_tokens=?,
-		latency_ms=?, first_byte_ms=? WHERE id=?`
-	res, err := s.db.ExecContext(ctx, q,
-		e.Status, e.HTTPStatus, e.Error, e.ResponseBody,
-		e.PromptTokens, e.CompletionTokens, e.PromptCacheHitTokens,
-		e.LatencyMS, e.FirstByteMS, e.ID)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// MarkInterrupted 把中断的 processing 行收口为 failed。
-// cutoff=当前时间即清理上次进程遗留的全部 processing（启动时调用）；
-// cutoff=now-staleAfter 只清理超时行（运行中周期调用）。
-func (s *Store) MarkInterrupted(ctx context.Context, cutoff time.Time, reason string) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE request_logs SET status=?, error=? WHERE status=? AND created_at < ?`,
-		LogStatusFailed, reason, LogStatusProcessing, cutoff.UTC())
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
 }
 
 type LogFilter struct {

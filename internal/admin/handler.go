@@ -86,6 +86,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			})
 			r.Get("/quota-types", h.quotas.listQuotaTypes)
 			r.Get("/logs", h.data.listLogs)
+			r.Get("/logs/live/{key}", h.data.getLiveLog)
 			r.Get("/logs/{id}", h.data.getLog)
 		})
 	})

@@ -6,7 +6,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db     *sql.DB
+	active activeRegistry // 进行中的尝试只存内存，不落库
+}
 
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)

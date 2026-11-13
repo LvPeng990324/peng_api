@@ -2,7 +2,6 @@ package relay
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,60 +13,35 @@ import (
 	"pengapi/internal/store"
 )
 
-const (
-	logWriteTimeout = 5 * time.Second
-	// 起始写落在请求关键路径上，超时要比收口写更短，避免拖慢首字
-	logStartTimeout = 2 * time.Second
-)
+const logWriteTimeout = 5 * time.Second
 
 // 客户端断开后日志仍要落盘，故 DB 操作用脱离请求生命周期的 ctx
 func detachedCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), logWriteTimeout)
 }
 
-// startLog 在发往上游之前写一行 processing，日志页立即可见。
-// 写失败只记日志并返回 0，绝不阻断主请求；finishLog 会回落补写完整记录。
-func (e *Engine) startLog(entry *store.LogEntry) int64 {
-	entry.Status = store.LogStatusProcessing
-	entry.CreatedAt = time.Now().UTC()
-	ctx, cancel := context.WithTimeout(context.Background(), logStartTimeout)
-	defer cancel()
-	id, err := e.store.InsertLog(ctx, *entry)
-	if err != nil {
-		log.Printf("start request log: %v", err)
-		return 0
-	}
-	return id
-}
-
-// finishLog 回填同一行的终态。panic 被 Recoverer 兜住时 defer 仍会执行，
-// 此时 Status 可能为空或仍是 processing，两者都必须显式收口，
-// 否则会留下没有终态的僵尸行。
-func (e *Engine) finishLog(id int64, entry *store.LogEntry) {
+// finishLog 只做一次落库：进行中的尝试本来就在内存里，不写 DB。
+// panic 被 Recoverer 兜住时 defer 仍会执行，此时终态可能为空或仍是 processing，
+// 两者都必须显式收口，不能写出没有终态的行。
+func (e *Engine) finishLog(key string, entry *store.LogEntry) {
+	e.store.EndAttempt(key)
 	if entry.Status == "" || entry.Status == store.LogStatusProcessing {
 		entry.Status = store.LogStatusFailed
 		entry.Error = "interrupted: request did not finish"
 	}
-	entry.ID = id
 	ctx, cancel := detachedCtx()
 	defer cancel()
-	if id == 0 {
-		e.insertLog(ctx, entry)
-		return
-	}
-	if err := e.store.UpdateLog(ctx, *entry); err != nil {
-		log.Printf("update request log: %v", err)
-		// 行被日志清理删掉时补写，避免丢日志
-		if errors.Is(err, store.ErrNotFound) {
-			e.insertLog(ctx, entry)
-		}
-	}
-}
-
-func (e *Engine) insertLog(ctx context.Context, entry *store.LogEntry) {
 	if _, err := e.store.InsertLog(ctx, *entry); err != nil {
 		log.Printf("insert request log: %v", err)
 	}
+}
+
+// progressReporter 把流式已输出 token 写进内存行；key 为空时不跟踪。
+func (e *Engine) progressReporter(key string) func(int) {
+	if key == "" {
+		return nil
+	}
+	return func(n int) { e.store.SetAttemptProgress(key, n) }
 }
 
 // dispatch 收集一次客户端请求在整轮重试里不变的信息。
@@ -124,9 +98,10 @@ func (e *Engine) tryCandidate(d *dispatch, attempt int, cand store.Candidate) at
 		ModelRequested: d.req.model, ModelCanonical: d.mapping.Name, ModelActual: cand.ModelName,
 		ChannelID: &cand.Channel.ID, ChannelName: cand.Channel.Name,
 		Stream: d.req.isStream(), RequestBody: string(reqBody),
+		CreatedAt: time.Now().UTC(),
 	}
-	logID := e.startLog(&entry)
-	defer e.finishLog(logID, &entry)
+	key := e.store.BeginAttempt(store.NewActiveAttempt(entry))
+	defer e.finishLog(key, &entry)
 
 	start := time.Now()
 	ep := provider.Endpoint{BaseURL: cand.Channel.BaseURL, APIKey: cand.Channel.APIKey}
@@ -143,7 +118,7 @@ func (e *Engine) tryCandidate(d *dispatch, attempt int, cand store.Candidate) at
 		if d.req.isStream() {
 			// p.Chat 返回即收到上游响应头，此刻耗时即首字耗时。
 			entry.FirstByteMS = entry.LatencyMS
-			finishStream(d.w, res.Stream, &entry, start)
+			finishStreamWithProgress(d.w, res.Stream, &entry, start, e.progressReporter(key))
 			return attemptResult{done: true}
 		}
 		writeSuccess(d.w, &entry, res)
