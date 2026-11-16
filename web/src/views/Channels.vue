@@ -6,6 +6,18 @@
   </div>
 
   <a-table :scroll="{ x: 'max-content' }" :data-source="sortedChannels" :columns="columns" row-key="id" :pagination="false">
+    <template #headerCell="{ title, column }">
+      <span v-if="column.key === 'quota'" class="quota-header">
+        {{ title }}
+        <a-tooltip title="刷新所有渠道额度">
+          <a-button size="small" shape="circle" @click="refreshQuotas" :disabled="refreshing">
+            <span v-if="refreshing" class="icon-spin"><ReloadOutlined /></span>
+            <span v-else><ReloadOutlined /></span>
+          </a-button>
+        </a-tooltip>
+      </span>
+      <span v-else>{{ title }}</span>
+    </template>
     <template #bodyCell="{ column, record: c }">
       <template v-if="column.key === 'name'">
         {{ c.name }}
@@ -56,10 +68,11 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { Modal } from 'ant-design-vue'
+import { ReloadOutlined } from '@ant-design/icons-vue'
 import { api } from '../api'
 import {
   channelModels, ensureLoaded, guard, loadChannels, loadModels,
-  quotaFor, sortedChannels,
+  quotaFor, refreshChannelQuotas, sortedChannels,
 } from '../store'
 import ChannelFormModal from '../components/ChannelFormModal.vue'
 import ChannelModelsModal from '../components/ChannelModelsModal.vue'
@@ -81,6 +94,16 @@ const formModal = ref(null)
 const modelsModal = ref(null)
 const fetchModal = ref(null)
 const testModal = ref(null)
+const refreshing = ref(false)
+
+async function refreshQuotas() {
+  refreshing.value = true
+  try {
+    await refreshChannelQuotas()
+  } finally {
+    refreshing.value = false
+  }
+}
 
 function formatPercent(value) {
   if (value === null || value === undefined) return '-'
@@ -118,5 +141,17 @@ onMounted(() => ensureLoaded('channels'))
   font-size: 12px;
   line-height: 1.4;
   white-space: nowrap;
+}
+.quota-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.icon-spin {
+  display: inline-block;
+  animation: iconSpin 1s linear infinite;
+}
+@keyframes iconSpin {
+  to { transform: rotate(360deg); }
 }
 </style>

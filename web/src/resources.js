@@ -82,3 +82,8 @@ async function loadChannelQuotas() {
     }
   }))
 }
+
+// 手动刷新所有渠道额度：重新请求每个渠道的额度接口，更新界面显示。
+export async function refreshChannelQuotas() {
+  await loadChannelQuotas()
+}

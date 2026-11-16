@@ -4,4 +4,5 @@ export { tabs, sortedChannels, channelModels, quotaFor } from './selectors'
 export {
   guard, ensureLoaded, loadInitial, loadQuotaTypes,
   loadChannels, loadModels, loadMappings, loadTokens,
+  refreshChannelQuotas,
 } from './resources'
