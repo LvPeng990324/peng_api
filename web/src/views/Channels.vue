@@ -34,6 +34,10 @@
             <div>5h：{{ formatPercent(quotaFor(c).quota.five_hour) }}</div>
             <div>7d：{{ formatPercent(quotaFor(c).quota.weekly) }}</div>
           </div>
+          <div v-else-if="c.quota_type === 'new-api'">
+            {{ fmtQuota(quotaFor(c).quota.remaining, quotaFor(c).quota) }} /
+            {{ fmtQuota(quotaFor(c).quota.limit, quotaFor(c).quota) }}
+          </div>
         </template>
         <span v-else>-</span>
       </div>
@@ -82,7 +86,7 @@ import TestChannelModal from '../components/TestChannelModal.vue'
 const columns = [
   { title: 'ID', dataIndex: 'id', width: 60 },
   { title: '名称', dataIndex: 'name', key: 'name' },
-  { title: '额度', key: 'quota', width: 110 },
+  { title: '额度', key: 'quota', width: 120 },
   { title: '地址', key: 'base_url' },
   { title: '优先级', dataIndex: 'priority', width: 80 },
   { title: '模型数', key: 'models', width: 80 },
@@ -108,6 +112,17 @@ async function refreshQuotas() {
 function formatPercent(value) {
   if (value === null || value === undefined) return '-'
   return Number(value.toFixed(2)) + '%'
+}
+
+// new-api 的额度是 quota 单位，按后端下发的 quota_per_unit（500000 quota = ¥1）折算成金额数字，
+// 单元格里只显示「剩余 / 总额」，不重复货币符号。
+function fmtQuota(value, quota) {
+  if (value === null || value === undefined) return '-'
+  const perUnit = quota.quota_per_unit
+  if (!perUnit) return String(value)
+  return (value / perUnit).toLocaleString('zh-CN', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })
 }
 
 async function reload() {

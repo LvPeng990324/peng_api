@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS channels (
   quota_type TEXT NOT NULL DEFAULT '',
   base_url TEXT NOT NULL,
   api_key TEXT NOT NULL,
+  quota_token TEXT NOT NULL DEFAULT '',
   priority INTEGER NOT NULL DEFAULT 0,
   enabled INTEGER NOT NULL DEFAULT 1,
   test_model TEXT NOT NULL DEFAULT '',
@@ -84,6 +85,7 @@ var legacyTables = []string{"model_aliases", "channel_models", "models", "channe
 // 不需要在生产代码里解析 DDL。
 var addedColumns = []struct{ table, column, ddl string }{
 	{"channels", "quota_type", "TEXT NOT NULL DEFAULT ''"},
+	{"channels", "quota_token", "TEXT NOT NULL DEFAULT ''"},
 	{"channels", "remark", "TEXT NOT NULL DEFAULT ''"},
 	{"request_logs", "prompt_cache_hit_tokens", "INTEGER"},
 	{"request_logs", "agent", "TEXT NOT NULL DEFAULT ''"},

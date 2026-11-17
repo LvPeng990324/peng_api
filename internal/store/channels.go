@@ -7,18 +7,20 @@ import (
 )
 
 // Channel 上游渠道：只提供连接信息与优先级，是模型实体的容器。
+// QuotaToken 只用于额度查询接口鉴权，与转发用的 APIKey 相互独立。
 type Channel struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Type      string    `json:"type"`
-	QuotaType string    `json:"quota_type"`
-	BaseURL   string    `json:"base_url"`
-	APIKey    string    `json:"api_key"`
-	Priority  int       `json:"priority"`
-	Enabled   bool      `json:"enabled"`
-	TestModel string    `json:"test_model"`
-	Remark    string    `json:"remark"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         int64     `json:"id"`
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	QuotaType  string    `json:"quota_type"`
+	BaseURL    string    `json:"base_url"`
+	APIKey     string    `json:"api_key"`
+	QuotaToken string    `json:"quota_token"`
+	Priority   int       `json:"priority"`
+	Enabled    bool      `json:"enabled"`
+	TestModel  string    `json:"test_model"`
+	Remark     string    `json:"remark"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // ChannelRef 是转发路径需要的渠道视图：只带调用上游必需的字段，
@@ -43,9 +45,9 @@ func (s *Store) CreateChannel(ctx context.Context, ch Channel) (*Channel, error)
 	}
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO channels (name, type, quota_type, base_url, api_key, priority, enabled, test_model, remark, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
-		ch.Name, ch.Type, ch.QuotaType, ch.BaseURL, ch.APIKey, ch.Priority, ch.TestModel, ch.Remark, now)
+		INSERT INTO channels (name, type, quota_type, base_url, api_key, quota_token, priority, enabled, test_model, remark, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+		ch.Name, ch.Type, ch.QuotaType, ch.BaseURL, ch.APIKey, ch.QuotaToken, ch.Priority, ch.TestModel, ch.Remark, now)
 	if err != nil {
 		return nil, err
 	}
@@ -60,9 +62,9 @@ func (s *Store) UpdateChannel(ctx context.Context, ch Channel) error {
 		ch.Type = "openai"
 	}
 	_, err := s.db.ExecContext(ctx, `
-		UPDATE channels SET name=?, type=?, quota_type=?, base_url=?, api_key=?, priority=?, enabled=?, test_model=?, remark=?
+		UPDATE channels SET name=?, type=?, quota_type=?, base_url=?, api_key=?, quota_token=?, priority=?, enabled=?, test_model=?, remark=?
 		WHERE id=?`,
-		ch.Name, ch.Type, ch.QuotaType, ch.BaseURL, ch.APIKey, ch.Priority, ch.Enabled, ch.TestModel, ch.Remark, ch.ID)
+		ch.Name, ch.Type, ch.QuotaType, ch.BaseURL, ch.APIKey, ch.QuotaToken, ch.Priority, ch.Enabled, ch.TestModel, ch.Remark, ch.ID)
 	return err
 }
 
@@ -72,10 +74,10 @@ func (s *Store) DeleteChannel(ctx context.Context, id int64) error {
 }
 
 func (s *Store) GetChannel(ctx context.Context, id int64) (*Channel, error) {
-	const q = `SELECT id, name, type, quota_type, base_url, api_key, priority, enabled, test_model, remark, created_at
+	const q = `SELECT id, name, type, quota_type, base_url, api_key, quota_token, priority, enabled, test_model, remark, created_at
 		FROM channels WHERE id=?`
 	var c Channel
-	err := s.db.QueryRowContext(ctx, q, id).Scan(&c.ID, &c.Name, &c.Type, &c.QuotaType, &c.BaseURL, &c.APIKey,
+	err := s.db.QueryRowContext(ctx, q, id).Scan(&c.ID, &c.Name, &c.Type, &c.QuotaType, &c.BaseURL, &c.APIKey, &c.QuotaToken,
 		&c.Priority, &c.Enabled, &c.TestModel, &c.Remark, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -87,7 +89,7 @@ func (s *Store) GetChannel(ctx context.Context, id int64) (*Channel, error) {
 }
 
 func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, quota_type, base_url, api_key, priority, enabled,
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, quota_type, base_url, api_key, quota_token, priority, enabled,
 		test_model, remark, created_at FROM channels ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -96,7 +98,7 @@ func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 	out := []Channel{}
 	for rows.Next() {
 		var c Channel
-		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.QuotaType, &c.BaseURL, &c.APIKey, &c.Priority,
+		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.QuotaType, &c.BaseURL, &c.APIKey, &c.QuotaToken, &c.Priority,
 			&c.Enabled, &c.TestModel, &c.Remark, &c.CreatedAt); err != nil {
 			return nil, err
 		}

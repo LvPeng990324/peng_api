@@ -13,15 +13,16 @@ import (
 )
 
 type channelInput struct {
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	QuotaType string `json:"quota_type"`
-	BaseURL   string `json:"base_url"`
-	APIKey    string `json:"api_key"`
-	Priority  int    `json:"priority"`
-	Enabled   *bool  `json:"enabled"`
-	TestModel string `json:"test_model"`
-	Remark    string `json:"remark"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	QuotaType  string `json:"quota_type"`
+	QuotaToken string `json:"quota_token"`
+	BaseURL    string `json:"base_url"`
+	APIKey     string `json:"api_key"`
+	Priority   int    `json:"priority"`
+	Enabled    *bool  `json:"enabled"`
+	TestModel  string `json:"test_model"`
+	Remark     string `json:"remark"`
 }
 
 // validate 在保存渠道时就把配置错误挡住：未知协议不应等到转发时才降级成 503。
@@ -39,8 +40,8 @@ func (in channelInput) validate(validType func(string) bool) string {
 	if in.Type != "" && !validType(in.Type) {
 		return "unknown channel type: " + in.Type
 	}
-	if !validQuotaType(in.QuotaType) {
-		return "invalid quota_type"
+	if msg := validateQuotaConfig(in.QuotaType, in.QuotaToken); msg != "" {
+		return msg
 	}
 	return ""
 }
@@ -48,7 +49,7 @@ func (in channelInput) validate(validType func(string) bool) string {
 // toChannel 是输入 DTO → 领域实体的唯一转换点，创建与编辑共用。
 func (in channelInput) toChannel(id int64, enabled bool) store.Channel {
 	return store.Channel{
-		ID: id, Name: in.Name, Type: in.Type, QuotaType: in.QuotaType,
+		ID: id, Name: in.Name, Type: in.Type, QuotaType: in.QuotaType, QuotaToken: in.QuotaToken,
 		BaseURL: in.BaseURL, APIKey: in.APIKey, Priority: in.Priority,
 		Enabled: enabled, TestModel: in.TestModel, Remark: in.Remark,
 	}

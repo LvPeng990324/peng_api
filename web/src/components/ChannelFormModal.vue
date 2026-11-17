@@ -12,6 +12,9 @@
           <a-select-option v-for="t in store.quotaTypes" :key="t.value" :value="t.value">{{ t.label }}</a-select-option>
         </a-select>
       </a-form-item>
+      <a-form-item v-if="quotaNeedsToken" label="访问令牌">
+        <a-input v-model:value="form.quota_token" placeholder="额度接口鉴权用令牌，如 nap_xxx" />
+      </a-form-item>
       <a-form-item label="优先级（越大越优先）">
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
       </a-form-item>
@@ -36,10 +39,15 @@ const open = ref(false)
 const saving = ref(false)
 
 const emptyForm = () => ({
-  id: null, name: '', base_url: '', api_key: '', quota_type: '',
+  id: null, name: '', base_url: '', api_key: '', quota_type: '', quota_token: '',
   priority: 0, enabled: true, test_model: '', remark: '',
 })
 const form = reactive(emptyForm())
+
+// 额度接口需要专用令牌的类型（new-api）才显示访问令牌输入框，由后端 /api/quota-types 下发
+const quotaNeedsToken = computed(() =>
+  store.quotaTypes.some(t => t.value === form.quota_type && t.requires_token),
+)
 
 const testModelOptions = computed(() =>
   form.id ? store.models.filter(m => m.channel_id === form.id).map(m => m.name) : [],
@@ -49,7 +57,8 @@ function show(c) {
   if (c) {
     Object.assign(form, {
       id: c.id, name: c.name, base_url: c.base_url, api_key: c.api_key,
-      quota_type: c.quota_type || '', priority: c.priority, enabled: c.enabled,
+      quota_type: c.quota_type || '', quota_token: c.quota_token || '',
+      priority: c.priority, enabled: c.enabled,
       test_model: c.test_model, remark: c.remark,
     })
   } else {
