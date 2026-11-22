@@ -19,12 +19,15 @@
       <template v-else-if="column.key === 'created_at'">{{ fmtTime(t.created_at) }}</template>
       <template v-else-if="column.key === 'ops'">
         <a-space>
-          <a @click="toggleToken(t)">{{ t.enabled ? '禁用' : '启用' }}</a>
+          <a @click="formModal.show(t)">编辑</a>
           <a class="err" @click="delToken(t)">删除</a>
         </a-space>
       </template>
     </template>
   </a-table>
+
+  <!-- 编辑 token 弹窗 -->
+  <TokenFormModal ref="formModal" @saved="loadTokens" />
 
   <!-- 新 token 弹窗 -->
   <a-modal v-model:open="createdTokenOpen" title="Token 已创建" :footer="null">
@@ -44,6 +47,7 @@ import { Modal, message } from 'ant-design-vue'
 import { api } from '../api'
 import { ensureLoaded, guard, loadTokens, store } from '../store'
 import { fmtTime } from '../utils'
+import TokenFormModal from '../components/TokenFormModal.vue'
 
 const columns = [
   { title: 'ID', dataIndex: 'id', width: 60 },
@@ -58,6 +62,7 @@ const newTokenName = ref('')
 const creatingToken = ref(false)
 const createdTokenOpen = ref(false)
 const createdToken = reactive({ token: '' })
+const formModal = ref(null)
 
 async function createToken() {
   if (!newTokenName.value.trim()) return
@@ -73,13 +78,6 @@ async function createToken() {
   } finally {
     creatingToken.value = false
   }
-}
-
-async function toggleToken(t) {
-  await guard(async () => {
-    await api('/tokens/' + t.id, { method: 'PUT', body: { name: t.name, enabled: !t.enabled } })
-    await loadTokens()
-  })
 }
 
 function delToken(t) {
