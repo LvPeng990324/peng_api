@@ -242,7 +242,7 @@ func TestChannelCRUD(t *testing.T) {
 
 	ch, err := s.CreateChannel(ctx, Channel{
 		Name: "zhipu", Type: "openai", QuotaType: "openrouter", BaseURL: "https://api.bigmodel.cn/coding/paas/v4",
-		APIKey: "key1", Priority: 10, TestModel: "glm-5.3-free",
+		APIKey: "key1", Priority: 10,
 	})
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
@@ -252,7 +252,7 @@ func TestChannelCRUD(t *testing.T) {
 	if err != nil || got == nil {
 		t.Fatalf("GetChannel: %v", err)
 	}
-	if got.Name != "zhipu" || got.Priority != 10 || !got.Enabled || got.TestModel != "glm-5.3-free" || got.QuotaType != "openrouter" {
+	if got.Name != "zhipu" || got.Priority != 10 || !got.Enabled || got.QuotaType != "openrouter" {
 		t.Errorf("unexpected channel: %+v", got)
 	}
 	list, err := s.ListChannels(ctx)
@@ -262,7 +262,7 @@ func TestChannelCRUD(t *testing.T) {
 
 	if err := s.UpdateChannel(ctx, Channel{
 		ID: ch.ID, Name: "zhipu2", Type: "openai", QuotaType: "kimi", BaseURL: got.BaseURL, APIKey: "key2",
-		Priority: 5, Enabled: true, TestModel: "m2",
+		Priority: 5, Enabled: true,
 	}); err != nil {
 		t.Fatalf("UpdateChannel: %v", err)
 	}

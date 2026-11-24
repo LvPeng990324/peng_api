@@ -18,11 +18,6 @@
       <a-form-item label="优先级（越大越优先）">
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
       </a-form-item>
-      <a-form-item label="测试模型（连通性测试用，选便宜的）">
-        <a-select v-model:value="form.test_model" allow-clear placeholder="-- 未配置 --">
-          <a-select-option v-for="opt in testModelOptions" :key="opt" :value="opt">{{ opt }}</a-select-option>
-        </a-select>
-      </a-form-item>
       <a-form-item label="备注"><a-input v-model:value="form.remark" placeholder="选填，如用途、供应商说明" /></a-form-item>
       <a-form-item><a-checkbox v-model:checked="form.enabled">启用</a-checkbox></a-form-item>
     </a-form>
@@ -40,7 +35,7 @@ const saving = ref(false)
 
 const emptyForm = () => ({
   id: null, name: '', base_url: '', api_key: '', quota_type: '', quota_token: '',
-  priority: 0, enabled: true, test_model: '', remark: '',
+  priority: 0, enabled: true, remark: '',
 })
 const form = reactive(emptyForm())
 
@@ -49,17 +44,12 @@ const quotaNeedsToken = computed(() =>
   store.quotaTypes.some(t => t.value === form.quota_type && t.requires_token),
 )
 
-const testModelOptions = computed(() =>
-  form.id ? store.models.filter(m => m.channel_id === form.id).map(m => m.name) : [],
-)
-
 function show(c) {
   if (c) {
     Object.assign(form, {
       id: c.id, name: c.name, base_url: c.base_url, api_key: c.api_key,
       quota_type: c.quota_type || '', quota_token: c.quota_token || '',
-      priority: c.priority, enabled: c.enabled,
-      test_model: c.test_model, remark: c.remark,
+      priority: c.priority, enabled: c.enabled, remark: c.remark,
     })
   } else {
     Object.assign(form, emptyForm())

@@ -487,7 +487,7 @@ func TestChannelsAPI(t *testing.T) {
 	// 创建渠道（不含模型绑定）
 	resp := env.call(t, http.MethodPost, "/api/channels", `{
 		"name":"zhipu","base_url":"https://api.bigmodel.cn/coding/paas/v4","api_key":"k1",
-		"priority":10,"test_model":"glm-5.3-free"}`)
+		"priority":10}`)
 	v := readJSON(t, resp)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create: %d %v", resp.StatusCode, v)
@@ -501,7 +501,7 @@ func TestChannelsAPI(t *testing.T) {
 	if ch["name"] != "zhipu" || ch["priority"].(float64) != 10 || ch["enabled"] != true {
 		t.Fatalf("list: %v", ch)
 	}
-	for _, gone := range []string{"models", "auto_disabled", "consecutive_failures", "disabled_until"} {
+	for _, gone := range []string{"models", "auto_disabled", "consecutive_failures", "disabled_until", "test_model"} {
 		if _, ok := ch[gone]; ok {
 			t.Errorf("field %s must be gone: %v", gone, ch)
 		}
@@ -517,7 +517,7 @@ func TestChannelsAPI(t *testing.T) {
 	// 更新
 	resp = env.call(t, http.MethodPut, "/api/channels/"+itoa(chID), `{
 		"name":"zhipu2","base_url":"https://example.com/v1","api_key":"k2","priority":5,
-		"enabled":true,"test_model":"m"}`)
+		"enabled":true}`)
 	if resp.StatusCode != 200 {
 		t.Fatalf("update: %d", resp.StatusCode)
 	}
@@ -637,12 +637,13 @@ func TestChannelConnectivityTest(t *testing.T) {
 	defer upstream.Close()
 
 	env := newAdminEnv(t)
-	resp := env.call(t, http.MethodPost, "/api/channels",
-		`{"name":"up","base_url":"`+upstream.URL+`","api_key":"k","priority":1,"test_model":"cheap-model"}`)
-	cv := readJSON(t, resp)
-	chID := int64(cv["id"].(float64))
+	chID := env.createChannel(t, "up", upstream.URL)
+	// 测试模型必须是本渠道下的模型实体
+	resp := env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/models", `{"names":["cheap-model"]}`)
+	readJSON(t, resp)
 
-	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/test", "")
+	const testBody = `{"model":"cheap-model","system_prompt":"be brief","user_prompt":"ping"}`
+	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/test", testBody)
 	v := readJSON(t, resp)
 	if resp.StatusCode != 200 {
 		t.Fatalf("test: %d %v", resp.StatusCode, v)
@@ -650,15 +651,17 @@ func TestChannelConnectivityTest(t *testing.T) {
 	if v["success"] != true || v["http_status"].(float64) != 200 {
 		t.Errorf("test result: %v", v)
 	}
-	if !strings.Contains(v["request_body"].(string), "cheap-model") ||
-		!strings.Contains(v["request_body"].(string), `"max_tokens":1`) {
-		t.Errorf("ping request body: %v", v["request_body"])
+	reqBody := v["request_body"].(string)
+	for _, want := range []string{`"model":"cheap-model"`, `"role":"system"`, `"content":"be brief"`, `"role":"user"`, `"content":"ping"`} {
+		if !strings.Contains(reqBody, want) {
+			t.Errorf("request body missing %s: %s", want, reqBody)
+		}
 	}
 	if !strings.Contains(v["response_body"].(string), "pong") {
 		t.Errorf("response body: %v", v)
 	}
-	if !strings.Contains(gotBody, "cheap-model") {
-		t.Errorf("upstream got: %s", gotBody)
+	if gotBody != reqBody {
+		t.Errorf("upstream got %s, want %s", gotBody, reqBody)
 	}
 
 	// 不写日志
@@ -667,14 +670,25 @@ func TestChannelConnectivityTest(t *testing.T) {
 		t.Error("ping must not write request_logs")
 	}
 
-	// 未配置 test_model → 400
-	resp = env.call(t, http.MethodPost, "/api/channels",
-		`{"name":"up2","base_url":"`+upstream.URL+`","api_key":"k"}`)
-	cv2 := readJSON(t, resp)
-	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(int64(cv2["id"].(float64)))+"/test", "")
-	readJSON(t, resp)
-	if resp.StatusCode != 400 {
-		t.Errorf("missing test_model: %d", resp.StatusCode)
+	// 系统提示词留空 → 只发 user 消息
+	resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/test",
+		`{"model":"cheap-model","system_prompt":"  ","user_prompt":"hi"}`)
+	v = readJSON(t, resp)
+	if resp.StatusCode != 200 || strings.Contains(v["request_body"].(string), `"system"`) {
+		t.Errorf("empty system prompt should not add system message: %d %v", resp.StatusCode, v)
+	}
+
+	// 缺 model / 缺 user_prompt / 模型不属于该渠道 → 400
+	for _, bad := range []string{
+		`{"user_prompt":"hi"}`,
+		`{"model":"cheap-model","user_prompt":"  "}`,
+		`{"model":"other-model","user_prompt":"hi"}`,
+	} {
+		resp = env.call(t, http.MethodPost, "/api/channels/"+itoa(chID)+"/test", bad)
+		readJSON(t, resp)
+		if resp.StatusCode != 400 {
+			t.Errorf("bad test body %s: %d", bad, resp.StatusCode)
+		}
 	}
 }
 

@@ -78,6 +78,7 @@
 - **转发候选是精简视图**：`Candidate` 用 `ChannelRef`（ID/Name/Type/BaseURL/APIKey），不带仅测试需要的字段；`/v1/models` 用 `PublicModel`
 - **admin 按依赖差异分组**：`Handler` 只是组合根，只拆 `authAPI`（session）/ `dataAPI`（纯 CRUD）/ `channelAPI`（+ providers）/ `quotaAPI`（+ quotaService）四类，共用一个 `storeAPI`；`storeAPI.loadChannel` 返回 `(渠道, bool)`；分页归一化只在 `LogFilter.Normalize`
 - **admin DTO 与状态**：`channelInput.toChannel` 是输入→实体的唯一转换；`tokenView` 是 Token 唯一响应形状；`quotaService.urlFor` 默认取 `quotaSources`，测试用 `setURL` 只登记覆盖项
+- **渠道连通性测试由前端传参**：`POST /api/channels/{id}/test` 收 `{model, system_prompt, user_prompt}`，`model` 必须是该渠道下的模型实体（否则 400）、`user_prompt` 必填、`system_prompt` 留空则不发送 system 消息；请求体与响应原文回给前端弹窗展示，不写 `request_logs`。渠道表已无 `test_model` 列（旧库残留列对显式列写入无影响，可手工 `ALTER TABLE channels DROP COLUMN test_model` 清理）
 - **额度类型单一注册点** `admin/quotaSources`：白名单、fetch 分发、`GET /api/quota-types` 下拉从此派生
 - **main 只做装配**：过期日志清理抽到 `startLogCleaner(ctx, st, retentionDays)`；超时/周期提为命名常量
 - **前端分层**：`state.js`（reactive 状态）/ `selectors.js`（派生数据）/ `resources.js`（`ensureLoaded` 幂等加载），`store.js` 只 re-export；`api.js` 不持有全局回调；`resources.js` 的 `reportError` 负责错误反馈与 401 登出，`guard` 返回 fn 结果让调用方感知失败，`loadInitial` 用 `loaded` 标记返回就绪状态；各页弹窗都在 `components/`；日志格式化（含状态三态与 processing 本地计时）集中在 `utils.js`

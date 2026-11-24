@@ -21,7 +21,6 @@ type channelInput struct {
 	APIKey     string `json:"api_key"`
 	Priority   int    `json:"priority"`
 	Enabled    *bool  `json:"enabled"`
-	TestModel  string `json:"test_model"`
 	Remark     string `json:"remark"`
 }
 
@@ -51,7 +50,7 @@ func (in channelInput) toChannel(id int64, enabled bool) store.Channel {
 	return store.Channel{
 		ID: id, Name: in.Name, Type: in.Type, QuotaType: in.QuotaType, QuotaToken: in.QuotaToken,
 		BaseURL: in.BaseURL, APIKey: in.APIKey, Priority: in.Priority,
-		Enabled: enabled, TestModel: in.TestModel, Remark: in.Remark,
+		Enabled: enabled, Remark: in.Remark,
 	}
 }
 
@@ -212,13 +211,46 @@ func (h channelAPI) addChannelModels(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// testChannelInput 连通性测试的入参：目标模型与两条提示词都由前端弹窗指定，
+// 不再依赖渠道上预先配置的测试模型。
+type testChannelInput struct {
+	Model        string `json:"model"`
+	SystemPrompt string `json:"system_prompt"`
+	UserPrompt   string `json:"user_prompt"`
+}
+
 func (h channelAPI) testChannel(w http.ResponseWriter, r *http.Request) {
 	ch, ok := h.loadChannel(w, r)
 	if !ok {
 		return
 	}
-	if ch.TestModel == "" {
-		httpx.Error(w, http.StatusBadRequest, "test_model not configured: add a model entity first")
+	var in testChannelInput
+	if !httpx.DecodeAdminJSON(w, r, &in) {
+		return
+	}
+	if strings.TrimSpace(in.Model) == "" {
+		httpx.Error(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	if strings.TrimSpace(in.UserPrompt) == "" {
+		httpx.Error(w, http.StatusBadRequest, "user_prompt is required")
+		return
+	}
+	// 只允许测本渠道下已有的模型实体，避免拿任意模型名去打上游
+	models, err := h.store.ModelsOfChannel(r.Context(), ch.ID)
+	if err != nil {
+		httpx.InternalError(w, err)
+		return
+	}
+	known := false
+	for _, m := range models {
+		if m.Name == in.Model {
+			known = true
+			break
+		}
+	}
+	if !known {
+		httpx.Error(w, http.StatusBadRequest, "model not found in this channel: "+in.Model)
 		return
 	}
 	p, ok := h.providers.For(ch.Type)
@@ -226,11 +258,15 @@ func (h channelAPI) testChannel(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, http.StatusBadRequest, "unknown channel type: "+ch.Type)
 		return
 	}
-	pingBody, err := json.Marshal(map[string]any{
-		"model":      ch.TestModel,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-		"max_tokens": 1,
-		"stream":     false,
+	messages := make([]map[string]string, 0, 2)
+	if strings.TrimSpace(in.SystemPrompt) != "" {
+		messages = append(messages, map[string]string{"role": "system", "content": in.SystemPrompt})
+	}
+	messages = append(messages, map[string]string{"role": "user", "content": in.UserPrompt})
+	reqBody, err := json.Marshal(map[string]any{
+		"model":    in.Model,
+		"messages": messages,
+		"stream":   false,
 	})
 	if err != nil {
 		httpx.InternalError(w, err)
@@ -238,11 +274,11 @@ func (h channelAPI) testChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 	res, err := p.Chat(r.Context(), endpointOf(ch), provider.ChatRequest{
-		Model: ch.TestModel, Body: pingBody, Stream: false,
+		Model: in.Model, Body: reqBody, Stream: false,
 	})
 	out := map[string]any{
 		"latency_ms":   time.Since(start).Milliseconds(),
-		"request_body": string(pingBody),
+		"request_body": string(reqBody),
 	}
 	switch {
 	case err != nil:
