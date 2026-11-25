@@ -45,6 +45,7 @@
 - **管理端绑定模型列表**：`bound_models` 顺序须与 `SelectModels` 的真实调用顺序对齐（`c.enabled DESC, c.priority DESC, m.id ASC`），禁用渠道模型带 `channel_enabled=false`/`channel_priority` 排在末尾但**不可剔除**（编辑映射的 `model_ids` 由该列表生成并全量替换，剔除会导致保存时误删绑定）
 - **模型可用性 = 渠道 enabled 动态推导**（JOIN channels 查询时过滤），不落库；无渠道自动禁用、无连续失败统计，只有手动启停
 - **模型页标记不可用模型**：`Model.channel_enabled` 由 `ListModels`/`ModelsOfChannel`/`GetModel` JOIN `channels.enabled` 带出（不落库），`Models.vue` 对 `false` 行加 `model-row-off` 类，整行文字加删除线并压暗（操作列除外）
+- **列表禁用行统一划线**：渠道页与模型页对被禁用/停用的行都用同一种视觉——`customRow` 给行加类（`ch-row-off` / `model-row-off`），scoped `:deep()` 对 `td` 加 `line-through` + `#94a3b8`，状态列（`className: 'col-status'` 的状态标签）与操作列用 `:not()` 排除，别把删除线画到 tag 和按钮上
 - **`GET /v1/models`**：只返回至少绑定一个可用模型实体的标准名，OpenAI 格式附带标准名侧参数（NULL 省略）
 - **发往上游的 model 字段总是被替换**为模型实体的 name（上游真实模型名）
 - **上游 4xx（除 429）不重试**，原样透传；5xx/429/网络错误/超时才降级到下一模型

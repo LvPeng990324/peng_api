@@ -5,7 +5,14 @@
     <a-button type="primary" @click="formModal.show(null)">新建渠道</a-button>
   </div>
 
-  <a-table :scroll="{ x: 'max-content' }" :data-source="sortedChannels" :columns="columns" row-key="id" :pagination="false">
+  <a-table
+    :scroll="{ x: 'max-content' }"
+    :data-source="sortedChannels"
+    :columns="columns"
+    row-key="id"
+    :pagination="false"
+    :custom-row="customRow"
+  >
     <template #headerCell="{ title, column }">
       <span v-if="column.key === 'quota'" class="quota-header">
         {{ title }}
@@ -90,9 +97,12 @@ const columns = [
   { title: '地址', key: 'base_url' },
   { title: '优先级', dataIndex: 'priority', width: 80 },
   { title: '模型数', key: 'models', width: 80 },
-  { title: '状态', key: 'enabled', width: 90 },
+  { title: '状态', key: 'enabled', width: 90, className: 'col-status' },
   { title: '操作', key: 'ops', width: 260 },
 ]
+
+// 已停用的渠道整行文字加删除线（状态列的状态标签与操作列除外）
+const customRow = (record) => ({ class: record.enabled === false ? 'ch-row-off' : '' })
 
 const formModal = ref(null)
 const modelsModal = ref(null)
@@ -152,6 +162,11 @@ onMounted(() => ensureLoaded('channels'))
 </script>
 
 <style scoped>
+/* 已停用的渠道：整行文字加删除线并压暗；状态列的标签与最后一列「操作」保持正常 */
+:deep(.ch-row-off) > td:not(.col-status):not(:last-child) {
+  text-decoration: line-through;
+  color: #94a3b8;
+}
 .quota-cell {
   font-size: 12px;
   line-height: 1.4;
