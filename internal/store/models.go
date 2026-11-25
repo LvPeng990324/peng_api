@@ -10,13 +10,14 @@ import (
 // Model 渠道下的模型实体（上游真实模型名），请求时替换 body 的 model 字段就用它。
 // 可用性 = 所属渠道 enabled，查询时动态推导，不落库。
 type Model struct {
-	ID          int64     `json:"id"`
-	ChannelID   int64     `json:"channel_id"`
-	ChannelName string    `json:"channel_name"`
-	Name        string    `json:"name"`
-	Mappings    []string  `json:"mappings"`    // 绑定的标准名列表，供列表展示
-	MappingIDs  []int64   `json:"mapping_ids"` // 绑定的标准名 id，供模型侧编辑弹窗回显
-	CreatedAt   time.Time `json:"created_at"`
+	ID             int64     `json:"id"`
+	ChannelID      int64     `json:"channel_id"`
+	ChannelName    string    `json:"channel_name"`
+	ChannelEnabled bool      `json:"channel_enabled"` // 所属渠道是否启用，供列表标记不可用模型
+	Name           string    `json:"name"`
+	Mappings       []string  `json:"mappings"`    // 绑定的标准名列表，供列表展示
+	MappingIDs     []int64   `json:"mapping_ids"` // 绑定的标准名 id，供模型侧编辑弹窗回显
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // CreateModel 创建模型实体；同渠道下重名时返回已存在的实体（幂等，供 fetch 流程批量添加）
@@ -49,7 +50,7 @@ func (s *Store) modelByName(ctx context.Context, channelID int64, name string) (
 
 func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 	return s.queryModels(ctx, `
-		SELECT m.id, m.channel_id, m.name, c.name, m.created_at
+		SELECT m.id, m.channel_id, m.name, c.name, c.enabled, m.created_at
 		FROM models m JOIN channels c ON c.id = m.channel_id
 		ORDER BY m.id`)
 }
@@ -57,7 +58,7 @@ func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 // ModelsOfChannel 某渠道下的全部模型实体
 func (s *Store) ModelsOfChannel(ctx context.Context, channelID int64) ([]Model, error) {
 	return s.queryModels(ctx, `
-		SELECT m.id, m.channel_id, m.name, c.name, m.created_at
+		SELECT m.id, m.channel_id, m.name, c.name, c.enabled, m.created_at
 		FROM models m JOIN channels c ON c.id = m.channel_id
 		WHERE m.channel_id=?
 		ORDER BY m.id`, channelID)
@@ -72,7 +73,7 @@ func (s *Store) queryModels(ctx context.Context, query string, args ...any) ([]M
 	out := []Model{}
 	for rows.Next() {
 		var m Model
-		if err := rows.Scan(&m.ID, &m.ChannelID, &m.Name, &m.ChannelName, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChannelID, &m.Name, &m.ChannelName, &m.ChannelEnabled, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -118,9 +119,9 @@ func (s *Store) modelBindings(ctx context.Context, modelID int64) ([]int64, []st
 func (s *Store) GetModel(ctx context.Context, id int64) (*Model, error) {
 	var m Model
 	err := s.db.QueryRowContext(ctx, `
-		SELECT m.id, m.channel_id, m.name, c.name, m.created_at
+		SELECT m.id, m.channel_id, m.name, c.name, c.enabled, m.created_at
 		FROM models m JOIN channels c ON c.id = m.channel_id WHERE m.id=?`, id).
-		Scan(&m.ID, &m.ChannelID, &m.Name, &m.ChannelName, &m.CreatedAt)
+		Scan(&m.ID, &m.ChannelID, &m.Name, &m.ChannelName, &m.ChannelEnabled, &m.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

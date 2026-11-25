@@ -5,7 +5,14 @@
     <a-button type="primary" @click="openModelForm(null)">新建模型</a-button>
   </div>
 
-  <a-table :scroll="{ x: 'max-content' }" :data-source="store.models" :columns="columns" row-key="id" :pagination="false">
+  <a-table
+    :scroll="{ x: 'max-content' }"
+    :data-source="store.models"
+    :columns="columns"
+    row-key="id"
+    :pagination="false"
+    :custom-row="customRow"
+  >
     <template #bodyCell="{ column, record: m }">
       <template v-if="column.key === 'name'"><span class="mono">{{ m.name }}</span></template>
       <template v-else-if="column.key === 'mappings'">
@@ -66,6 +73,9 @@ const columns = [
   { title: '操作', key: 'ops', width: 120 },
 ]
 
+// 所属渠道被禁用的模型不可被请求到，整行文字加删除线标记（操作列除外）
+const customRow = (record) => ({ class: record.channel_enabled === false ? 'model-row-off' : '' })
+
 const modelFormOpen = ref(false)
 const modelForm = reactive({ id: null, channel_id: null, name: '', mapping_ids: [] })
 const modelSaving = ref(false)
@@ -120,3 +130,15 @@ function delModel(m) {
 
 onMounted(() => Promise.all([ensureLoaded('models'), ensureLoaded('mappings')]))
 </script>
+
+<style scoped>
+/* 渠道已禁用的模型：整行文字加删除线并压暗，最后一列「操作」保持正常可点 */
+:deep(.model-row-off) > td {
+  text-decoration: line-through;
+  color: #94a3b8;
+}
+:deep(.model-row-off) > td:last-child {
+  text-decoration: none;
+  color: inherit;
+}
+</style>

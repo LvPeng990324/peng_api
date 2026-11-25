@@ -347,6 +347,23 @@ func TestModelCRUD(t *testing.T) {
 	if list[0].ChannelName != "zhipu" || len(list[0].Mappings) != 1 || list[0].Mappings[0] != "glm-5.3" {
 		t.Errorf("unexpected model row: %+v", list[0])
 	}
+	// 渠道启用状态随模型行带出（供前端标记不可用模型）
+	if !list[0].ChannelEnabled {
+		t.Errorf("model row must carry channel_enabled=true: %+v", list[0])
+	}
+	if err := s.SetChannelEnabled(ctx, ch.ID, false); err != nil {
+		t.Fatalf("SetChannelEnabled: %v", err)
+	}
+	list, _ = s.ListModels(ctx)
+	if list[0].ChannelEnabled {
+		t.Errorf("disabled channel must be reflected on model row: %+v", list[0])
+	}
+	if got, _ := s.GetModel(ctx, m.ID); got == nil || got.ChannelEnabled {
+		t.Errorf("GetModel must carry channel_enabled=false: %+v", got)
+	}
+	if err := s.SetChannelEnabled(ctx, ch.ID, true); err != nil {
+		t.Fatalf("SetChannelEnabled: %v", err)
+	}
 
 	// ModelsOfChannel 只含本渠道
 	ofCh, err := s.ModelsOfChannel(ctx, ch.ID)
