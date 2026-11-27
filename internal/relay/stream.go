@@ -3,6 +3,7 @@ package relay
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,15 +15,27 @@ import (
 // progressInterval 是流式进度写内存的节流间隔；前端 3s 轮询，1s 足够。
 const progressInterval = time.Second
 
+// doneSentinel 是 OpenAI SSE 的流结束标记载荷。
+var doneSentinel = []byte("[DONE]")
+
 // 透传上游 SSE 到客户端，累积全文并回填 entry；日志由调用方统一落盘。
 // 写出响应头后无法降级：客户端断开/上游断流都只影响日志，不再尝试下一模型。
-func finishStream(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntry, start time.Time) {
-	finishStreamWithProgress(w, src, entry, start, nil)
+func finishStream(ctx context.Context, w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntry, start time.Time) {
+	finishStreamWithProgress(ctx, w, src, entry, start, nil)
 }
 
 // finishStreamWithProgress 额外把流式近似已输出 token 通过 onProgress 上报：
 // 循环内按 progressInterval 节流，收口时再报一次最终值（短流也有值）。
-func finishStreamWithProgress(w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntry, start time.Time, onProgress func(int)) {
+//
+// 收口规则：
+//   - 读到 data: [DONE] 立即收口 success 并停止读流。这是协议约定的结束标记，
+//     客户端（SDK）收到后往往直接关连接，继续 read 只会拿到 context canceled，
+//     把已经完整交付的一次调用误记成 failed；
+//   - 读流返回 io.EOF 记 success（上游不带 [DONE] 直接关流的情况）；
+//   - 其余读错误按 ctx 归因：ctx 已取消 = 下游客户端中途断开（client aborted mid-stream），
+//     否则 = 上游断流（stream interrupted）；
+//   - 写客户端失败记 client disconnected。
+func finishStreamWithProgress(ctx context.Context, w http.ResponseWriter, src io.ReadCloser, entry *store.LogEntry, start time.Time, onProgress func(int)) {
 	defer src.Close()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -69,27 +82,46 @@ func finishStreamWithProgress(w http.ResponseWriter, src io.ReadCloser, entry *s
 					lastReport = time.Now()
 				}
 			}
-		}
-		if err != nil {
-			if err == io.EOF {
+			if isDoneSSELine(line) {
 				complete(store.LogStatusSuccess, "")
-			} else {
-				complete(store.LogStatusFailed, "stream interrupted: "+err.Error())
+				return
 			}
-			return
 		}
+		if err == nil {
+			continue
+		}
+		switch {
+		case err == io.EOF:
+			complete(store.LogStatusSuccess, "")
+		case ctx.Err() != nil:
+			complete(store.LogStatusFailed, "client aborted mid-stream")
+		default:
+			complete(store.LogStatusFailed, "stream interrupted: "+err.Error())
+		}
+		return
 	}
+}
+
+// ssePayload 取出 `data:` 行的载荷（去掉首尾空白），非 data 行返回 nil。
+func ssePayload(line []byte) []byte {
+	s := bytes.TrimSpace(line)
+	if !bytes.HasPrefix(s, []byte("data:")) {
+		return nil
+	}
+	return bytes.TrimSpace(s[len("data:"):])
+}
+
+// isDoneSSELine 判断一行是否为 OpenAI 流结束标记 `data: [DONE]`。
+func isDoneSSELine(line []byte) bool {
+	payload := ssePayload(line)
+	return len(payload) > 0 && bytes.Equal(payload, doneSentinel)
 }
 
 // countStreamDelta 把一行 SSE 换算成近似 token 数：含非空 delta.content 或
 // reasoning_content 的 chunk 记 1，同一 chunk 多个 choices 不重复计。
 func countStreamDelta(line []byte) int {
-	s := bytes.TrimSpace(line)
-	if !bytes.HasPrefix(s, []byte("data:")) {
-		return 0
-	}
-	payload := bytes.TrimSpace(s[len("data:"):])
-	if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+	payload := ssePayload(line)
+	if len(payload) == 0 || bytes.Equal(payload, doneSentinel) {
 		return 0
 	}
 	var v struct {

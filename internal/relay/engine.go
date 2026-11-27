@@ -118,7 +118,7 @@ func (e *Engine) tryCandidate(d *dispatch, attempt int, cand store.Candidate) at
 		if d.req.isStream() {
 			// p.Chat 返回即收到上游响应头，此刻耗时即首字耗时。
 			entry.FirstByteMS = entry.LatencyMS
-			finishStreamWithProgress(d.w, res.Stream, &entry, start, e.progressReporter(key))
+			finishStreamWithProgress(d.r.Context(), d.w, res.Stream, &entry, start, e.progressReporter(key))
 			return attemptResult{done: true}
 		}
 		writeSuccess(d.w, &entry, res)

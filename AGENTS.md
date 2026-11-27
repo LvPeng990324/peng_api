@@ -49,9 +49,14 @@
 - **`GET /v1/models`**：只返回至少绑定一个可用模型实体的标准名，OpenAI 格式附带标准名侧参数（NULL 省略）
 - **发往上游的 model 字段总是被替换**为模型实体的 name（上游真实模型名）
 - **上游 4xx（除 429）不重试**，原样透传；5xx/429/网络错误/超时才降级到下一模型
-- **流式**：写出响应头后不再降级；客户端断开只记日志；日志 response_body 存拼接后的完整 SSE 文本
+- **流式**：写出响应头后不再降级；日志 response_body 存拼接后的完整 SSE 文本
+- **流式收口规则**（`finishStreamWithProgress`，`http_status` 是上游响应码、`status` 是本次尝试的收口结果，200 也可以是 failed）：
+  - 读到 `data: [DONE]` 立即收口 success 并停止读流——这是协议结束标记，SDK 收到后常直接关连接，继续 read 只会拿到 `context canceled`，会把已完整交付的调用误记成 failed（历史库里就有一批这种假失败）；
+  - 读流返回 `io.EOF`（上游不带 `[DONE]` 直接关流）记 success；
+  - 其余读错误按 ctx 归因：`ctx.Err() != nil` → `client aborted mid-stream`（下游客户端中途断开，不是上游问题），否则 → `stream interrupted: <err>`（上游断流）；
+  - 写客户端失败 → `client disconnected: <err>`；`ctx` 由 `tryCandidate` 传入 `d.r.Context()`，是区分「客户端断开」与「上游断流」的唯一依据
 - **日志按上游尝试记录，且请求进入即可见**：每次尝试一行，request_id（UUID）归组同次客户端请求；进行中的尝试**只存在内存**（`store/active.go` 的 `BeginAttempt`/`SetAttemptProgress`/`EndAttempt`/`ActiveAttempts`/`ActiveLog`），发往上游前登记即可被日志页看到，结束时 `finishLog` 一次 `InsertLog` 落库并 `EndAttempt` 释放——**每次尝试只有 1 次 DB 写**，进程崩溃时内存行随进程消失，`request_logs` 里永远不会出现 `processing` 行，也不需要僵尸行清理。状态常量仍在 `store`（`LogStatusProcessing` 只用于内存行）；`created_at` 用登记时的 `StartedAt`，语义是**请求开始时间**，时间范围筛选与保留清理都按这个时间；启动时及每 24h 清理过期日志
-- **流式 token 进度是内存近似值**：`countStreamDelta` 把含非空 `delta.content`/`reasoning_content` 的 SSE chunk 记 1（同一 chunk 多 choices 不重复计），按 `progressInterval=1s` 节流写内存、收口时再报一次最终值；它是 chunk 计数近似，与上游 usage 不等价，只在 processing 行以 `live_completion_tokens` 展示并标「约」，不能当用量统计用
+- **流式 token 进度是内存近似值**：`countStreamDelta` 把含非空 `delta.content`/`reasoning_content` 的 SSE chunk 记 1（同一 chunk 多 choices 不重复计），按 `progressInterval=1s` 节流写内存、收口时再报一次最终值；SSE 行解析统一走 `ssePayload`（`data:` 后载荷），`[DONE]` 判定走 `isDoneSSELine`；它是 chunk 计数近似，与上游 usage 不等价，只在 processing 行以 `live_completion_tokens` 展示并标「约」，不能当用量统计用
 - **日志模型三列**：`model_requested`（客户端原始名）/`model_canonical`（命中标准名）/`model_actual`（本次尝试发往上游的模型实体名，由 engine 写入 cand.ModelName）；`model_actual` 对旧库用 ensureColumn 幂等补列，历史日志为空串，模型模糊筛选同时匹配三列；日志页模型列主行显示标准名、下方用 `.ch-remark` 灰色小字显示实际名
 - **落库用脱离请求 ctx 的 detached ctx（5s 超时）**，防止客户端断开丢日志；落库失败只记日志，不影响已经结束的尝试；panic 被 Recoverer 兜住时 defer 仍执行，`finishLog` 把空状态或仍为 `processing` 都兜底成 `failed/interrupted` 后再落库
 - **日志页实时性**：`Logs.vue` 3s 静默轮询（不置 loading、in-flight 防重入），仅第 1 页生效，提供「自动刷新」开关，`document.hidden` 暂停、切回可见立即刷一次，`onUnmounted` 清 timer 与事件监听；进行中的行来自 `GET /api/logs` 的 `live` 数组（**只在 `page=1` 返回、不占分页槽位、不计入 total**），前端拼在 `data` 前面、`row-key` 用 `live_key`（见 `utils.js` 的 `logRowKey`），详情走 `GET /api/logs/live/{key}`；`processing` 行的「已运行」由 `created_at` + 前端本地时钟（`fmtElapsed`）算出；状态标签/颜色/文案统一走 `statusLabel`/`statusTagColor`/`statusTextColor`

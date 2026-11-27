@@ -603,7 +603,7 @@ func TestFinishStreamUpstreamInterrupt(t *testing.T) {
 	src := io.NopCloser(&failAfterReader{data: []byte("data: partial\n\n")})
 	entry := &store.LogEntry{RequestID: "r1", Attempt: 1, Status: "success", Stream: true}
 	rec := httptest.NewRecorder()
-	finishStream(rec, src, entry, time.Now().Add(-50*time.Millisecond))
+	finishStream(context.Background(), rec, src, entry, time.Now().Add(-50*time.Millisecond))
 
 	if entry.Status != "failed" || !strings.Contains(entry.Error, "stream interrupted") {
 		t.Errorf("entry: %+v", entry)
@@ -633,7 +633,7 @@ func (f *failAfterReader) Read(p []byte) (int, error) {
 func TestFinishStreamClientDisconnect(t *testing.T) {
 	src := io.NopCloser(strings.NewReader("data: a\n\ndata: b\n\n"))
 	entry := &store.LogEntry{RequestID: "r2", Attempt: 1, Stream: true}
-	finishStream(&brokenWriter{header: http.Header{}}, src, entry, time.Now().Add(-50*time.Millisecond))
+	finishStream(context.Background(), &brokenWriter{header: http.Header{}}, src, entry, time.Now().Add(-50*time.Millisecond))
 
 	if entry.Status != "failed" || !strings.Contains(entry.Error, "client disconnected") {
 		t.Errorf("entry: %+v", entry)
@@ -642,6 +642,60 @@ func TestFinishStreamClientDisconnect(t *testing.T) {
 		t.Errorf("nothing was written, body must stay empty: %+v", entry)
 	}
 }
+
+// finishStream 单元级：客户端中途断开（请求 ctx 取消）要与上游断流区分开。
+func TestFinishStreamClientAbortedMidStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	src := io.NopCloser(&failAfterReader{data: []byte("data: partial\n\n")})
+	entry := &store.LogEntry{RequestID: "r3", Attempt: 1, Stream: true}
+	rec := httptest.NewRecorder()
+	finishStream(ctx, rec, src, entry, time.Now().Add(-50*time.Millisecond))
+
+	if entry.Status != store.LogStatusFailed || entry.Error != "client aborted mid-stream" {
+		t.Errorf("entry: %+v", entry)
+	}
+	if !strings.Contains(rec.Body.String(), "partial") {
+		t.Errorf("partial content must reach client: %q", rec.Body.String())
+	}
+}
+
+// finishStream 单元级：已读到 data: [DONE] 就收口 success 并停止读流。
+// 客户端收到结束标记后断开连接，继续 read 只会拿到 context canceled，
+// 把已经完整交付的一次调用误记成 failed。
+func TestFinishStreamDoneBeforeReadError(t *testing.T) {
+	src := &doneThenFailReader{data: []byte("data: a\n\ndata: [DONE]\n\n")}
+	entry := &store.LogEntry{RequestID: "r4", Attempt: 1, Stream: true}
+	rec := httptest.NewRecorder()
+	finishStream(context.Background(), rec, src, entry, time.Now().Add(-50*time.Millisecond))
+
+	if entry.Status != store.LogStatusSuccess || entry.Error != "" {
+		t.Errorf("entry: %+v", entry)
+	}
+	if !strings.Contains(entry.ResponseBody, "data: [DONE]") {
+		t.Errorf("[DONE] must be accumulated: %q", entry.ResponseBody)
+	}
+	if !strings.Contains(rec.Body.String(), "data: [DONE]") {
+		t.Errorf("[DONE] must reach client: %q", rec.Body.String())
+	}
+}
+
+// doneThenFailReader 先一次性吐出整段 SSE（含 [DONE]），之后以 context.Canceled 失败：
+// 模拟上游发完结束标记就挂住、客户端随后断开的真实顺序。
+type doneThenFailReader struct {
+	data []byte
+	done bool
+}
+
+func (d *doneThenFailReader) Read(p []byte) (int, error) {
+	if d.done {
+		return 0, context.Canceled
+	}
+	d.done = true
+	return copy(p, d.data), nil
+}
+
+func (d *doneThenFailReader) Close() error { return nil }
 
 type brokenWriter struct {
 	header http.Header
@@ -930,7 +984,7 @@ func TestFinishStreamReportsProgress(t *testing.T) {
 	rec := httptest.NewRecorder()
 	entry := &store.LogEntry{}
 	var reports []int
-	finishStreamWithProgress(rec, io.NopCloser(strings.NewReader(body)), entry, time.Now(),
+	finishStreamWithProgress(context.Background(), rec, io.NopCloser(strings.NewReader(body)), entry, time.Now(),
 		func(n int) { reports = append(reports, n) })
 
 	if entry.Status != store.LogStatusSuccess || entry.ResponseBody == "" {
