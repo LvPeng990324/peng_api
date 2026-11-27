@@ -22,16 +22,18 @@
         <p v-if="selAttempt.error" class="err">{{ selAttempt.error }}</p>
         <h4>
           请求体
-          <a class="td-link" @click="state.viewReqRaw = !state.viewReqRaw">{{ state.viewReqRaw ? '只看用户消息' : '查看原文' }}</a>
-          <a class="td-link" @click="copyText(state.viewReqRaw ? pretty(selAttempt.request_body) : requestText(selAttempt.request_body))">复制</a>
+          <span class="detail-actions">
+            <a class="detail-act detail-act-view" @click="state.viewReqRaw = !state.viewReqRaw">{{ state.viewReqRaw ? '只看用户消息' : '查看原文' }}</a>
+            <a class="detail-act detail-act-copy" @click="copyText(state.viewReqRaw ? pretty(selAttempt.request_body) : requestText(selAttempt.request_body))">复制</a>
+          </span>
         </h4>
         <pre>{{ state.viewReqRaw ? pretty(selAttempt.request_body) : requestText(selAttempt.request_body) }}</pre>
         <h4>
           响应体
-          <template v-if="selAttempt.status !== 'processing'">
-            <a class="td-link" @click="state.viewRaw = !state.viewRaw">{{ state.viewRaw ? '查看拼接' : '查看原文' }}</a>
-            <a class="td-link" @click="copyText(state.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body))">复制</a>
-          </template>
+          <span v-if="selAttempt.status !== 'processing'" class="detail-actions">
+            <a class="detail-act detail-act-view" @click="state.viewRaw = !state.viewRaw">{{ state.viewRaw ? '查看拼接' : '查看原文' }}</a>
+            <a class="detail-act detail-act-copy" @click="copyText(state.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body))">复制</a>
+          </span>
         </h4>
         <pre v-if="selAttempt.status === 'processing'">请求处理中，暂无响应体</pre>
         <pre v-else>{{ state.viewRaw ? pretty(selAttempt.response_body) : sseText(selAttempt.response_body) }}</pre>
@@ -87,3 +89,47 @@ async function copyText(text) {
 
 defineExpose({ open })
 </script>
+
+<style scoped>
+/* h4 后面的两个操作做成小按钮，用颜色区分「切换视图」和「复制」 */
+.detail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.detail-act {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 400;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.detail-act-view {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, .12);
+  border-color: rgba(59, 130, 246, .4);
+}
+.detail-act-view:hover {
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, .22);
+  border-color: rgba(59, 130, 246, .65);
+}
+.detail-act-copy {
+  color: #6ee7b7;
+  background: rgba(16, 185, 129, .12);
+  border-color: rgba(52, 211, 153, .4);
+}
+.detail-act-copy:hover {
+  color: #a7f3d0;
+  background: rgba(16, 185, 129, .22);
+  border-color: rgba(52, 211, 153, .65);
+}
+</style>
