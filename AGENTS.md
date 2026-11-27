@@ -63,6 +63,7 @@
 - **live 桌面查询的筛选要跟着 SQL 走**：`LogFilter.matchActive` 在 Go 侧复刻 `LogFilter.where` 的模糊匹配/相等/时间范围语义，新增筛选条件时必须两处同步；`ActiveAttempts` 返回值拷贝，避免读锁外看到被并发修改的字段
 - **早期失败不记日志**：401（在 `auth.Bearer` 中间件）、请求体解析 400、`model not found` 404、无可用模型 503 都在 `run` 之前返回，维持不落日志；日志表只含真实上游尝试，`newUUID()` 保持在 `handler.go` 解析成功之后
 - **日志 `agent` 字段**记录下游调用方：`X-Client-Name` 请求头优先，缺省回落 `User-Agent`
+- **详情弹窗的请求体默认只显示 user 消息**：`utils.js` 的 `requestText` 抽 `messages` 里 `role=user` 的文本（多模态 content 数组只取 `text` 部分，图片等非文本部分显示 `[类型]` 占位，避免 base64 撑爆详情），首行给 `model` + 角色分布（`system 1 / user 4 / assistant 15 / tool 13`）；跳过 system 提示词、tools 定义与 tool 结果。`LogDetailModal.vue` 里「查看原文 / 只看用户消息」切换走 `state.viewReqRaw`，复制按钮跟随当前视图；响应体侧对应 `sseText`/`parseSSE`，同样有 `state.viewRaw` 切换
 - 客户端错误格式 `{"error":{"message","type","code"}}`；管理 API `{"error":"..."}`
 - 管理端 session 在内存中，重启失效是预期行为；Token 响应统一用 `tokenView`（列表 `maskedTokenView` 打码，创建与详情 `fullTokenView` 给完整值）
 - 新增/修改管理 API 时同步改 `web/src/` 下对应页面（views/ 与 components/）、`api.js`，以及 `resources.js`（加载）/ `selectors.js`（派生数据）；`store.js` 只做 re-export

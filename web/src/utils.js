@@ -48,6 +48,50 @@ export function pretty(s) {
   try { return JSON.stringify(JSON.parse(s), null, 2) } catch (e) { return s }
 }
 
+// 消息内容可能是纯文本，也可能是多模态部分数组（[{"type":"text","text":"…"}]）；
+// 非文本部分只保留类型占位，避免把 base64 图片之类的巨量内容铺进详情。
+function contentText(c) {
+  if (c == null) return ''
+  if (typeof c === 'string') return c
+  if (Array.isArray(c)) {
+    return c.map((p) => {
+      if (typeof p === 'string') return p
+      if (!p || typeof p !== 'object') return ''
+      if (typeof p.text === 'string') return p.text
+      return '[' + (p.type || '非文本内容') + ']'
+    }).filter(Boolean).join('\n')
+  }
+  if (typeof c === 'object') return typeof c.text === 'string' ? c.text : JSON.stringify(c)
+  return String(c)
+}
+
+// 请求体解析：只抽 user 轮的内容，跳过 system 提示词、tools 定义与工具结果，
+// 首行给出 messages 的角色分布，方便判断这次请求到底带了什么。
+export function requestText(s) {
+  if (!s) return '(空)'
+  let body
+  try { body = JSON.parse(s) } catch (e) { return s }
+  const messages = Array.isArray(body && body.messages) ? body.messages : null
+  if (!messages) return pretty(s)
+
+  const counts = {}
+  for (const m of messages) {
+    const role = (m && m.role) || 'unknown'
+    counts[role] = (counts[role] || 0) + 1
+  }
+  let head = body.model ? 'model ' + body.model + ' · ' : ''
+  head += 'messages ' + messages.length + ' 条：' +
+    Object.keys(counts).map((r) => r + ' ' + counts[r]).join(' / ')
+
+  const users = messages.filter((m) => m && m.role === 'user')
+  if (!users.length) return head + '\n\n没有 user 消息，可点「查看原文」看完整请求体'
+  const blocks = users.map((m, i) => {
+    const text = contentText(m.content).trim()
+    return `【用户消息 ${i + 1}/${users.length}】\n` + (text || '(空)')
+  })
+  return head + '\n\n' + blocks.join('\n\n')
+}
+
 // ---- 日志展示格式化：列表与详情共用同一套实现 ----
 
 export function fmtDur(ms) {

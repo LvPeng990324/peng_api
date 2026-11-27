@@ -20,8 +20,12 @@
           <template v-if="tokSpeed(selAttempt)"> · 速度 {{ tokSpeed(selAttempt) }}</template>
         </p>
         <p v-if="selAttempt.error" class="err">{{ selAttempt.error }}</p>
-        <h4>请求体 <a class="td-link" @click="copyText(pretty(selAttempt.request_body))">复制</a></h4>
-        <pre>{{ pretty(selAttempt.request_body) }}</pre>
+        <h4>
+          请求体
+          <a class="td-link" @click="state.viewReqRaw = !state.viewReqRaw">{{ state.viewReqRaw ? '只看用户消息' : '查看原文' }}</a>
+          <a class="td-link" @click="copyText(state.viewReqRaw ? pretty(selAttempt.request_body) : requestText(selAttempt.request_body))">复制</a>
+        </h4>
+        <pre>{{ state.viewReqRaw ? pretty(selAttempt.request_body) : requestText(selAttempt.request_body) }}</pre>
         <h4>
           响应体
           <template v-if="selAttempt.status !== 'processing'">
@@ -41,10 +45,10 @@ import { computed, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { api } from '../api'
 import { guard } from '../store'
-import { fmtDur, fmtTime, fmtTokens, liveOutput, pretty, sseText, statusLabel, statusTextColor, tokSpeed } from '../utils'
+import { fmtDur, fmtTime, fmtTokens, liveOutput, pretty, requestText, sseText, statusLabel, statusTextColor, tokSpeed } from '../utils'
 
 const visible = ref(false)
-const state = reactive({ data: null, attempts: [], sel: null, viewRaw: false, loading: false })
+const state = reactive({ data: null, attempts: [], sel: null, viewRaw: false, viewReqRaw: false, loading: false })
 
 const selAttempt = computed(() => {
   if (!state.data) return null
@@ -66,6 +70,7 @@ async function open(log) {
     state.attempts = v.attempts || [v.data]
     state.sel = v.data.id ?? 0
     state.viewRaw = false
+    state.viewReqRaw = false
   })
   state.loading = false
   if (!state.data) visible.value = false // 失败已由 guard 提示
